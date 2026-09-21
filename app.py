@@ -37,7 +37,6 @@ def buscar_imagen(nombre_base):
         if os.path.exists(f"{nombre_base}.{ext}"): return f"{nombre_base}.{ext}"
     return None
 
-# Asegurar que la sesión tome el valor real del archivo histórico
 if 'folio_actual' not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
 
@@ -51,12 +50,11 @@ with col1:
 with col2:
     tira_up = st.file_uploader("🧾 2. Tira Veeder-Root (Foto)", type=['jpg', 'jpeg', 'png'])
 
-# Usamos st.session_state.folio_actual para que no se resetee
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
 
 st.markdown("---")
 
-if st.button("🚀 Procesar Recepción", type="primary", use_container_width=True):
+if st.button("🚀 Procesar y Generar Bitácora", type="primary", use_container_width=True):
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
@@ -197,5 +195,37 @@ if st.button("🚀 Procesar Recepción", type="primary", use_container_width=Tru
 
             doc.build(elementos)
 
-            with open(ruta_pdf, "rb") as pdf_file:
-                st.download_button(label="⬇️ Descargar Bitácora PDF", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf", type="primary")
+            # Guardamos en la sesión para mostrar los botones de descarga y envío
+            st.session_state.pdf_listo = ruta_pdf
+            st.session_state.nombre_pdf = nombre_archivo_pdf
+
+# --- SECCIÓN DE ACCIONES POST-PROCESAMIENTO ---
+if 'pdf_listo' in st.session_state and os.path.exists(st.session_state.pdf_listo):
+    st.markdown("---")
+    st.success("📄 ¡La Bitácora Oficial está lista para guardarse!")
+    
+    col_dl, col_drive = st.columns(2)
+    
+    with col_dl:
+        with open(st.session_state.pdf_listo, "rb") as pdf_file:
+            st.download_button(
+                label="⬇️ Descargar PDF (PC)", 
+                data=pdf_file, 
+                file_name=st.session_state.nombre_pdf, 
+                mime="application/pdf", 
+                type="primary",
+                use_container_width=True
+            )
+            
+    with col_drive:
+        # Enlace directo optimizado para abrir Google Drive en una pestaña nueva y subir el archivo cómodamente
+        id_carp = st.secrets.get("ID_CARPETA", "")
+        url_drive = f"https://drive.google.com/drive/folders/{id_carp}" if id_carp else "https://drive.google.com/"
+        
+        st.markdown(f"""
+            <a href="{url_drive}" target="_blank">
+                <button style="width: 100%; background-color: #f0f2f6; color: #262730; border: 1px solid #d6d6d6; padding: 10px; border-radius: 4px; font-weight: 600; cursor: pointer;">
+                    ☁️ Abrir Carpeta de Drive
+                </button>
+            </a>
+        """, unsafe_allow_html=True)
