@@ -4,9 +4,7 @@ import PyPDF2
 from PIL import Image
 import json
 import re
-import base64
-import requests
-import io
+import google.generativeai as genai
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -24,7 +22,7 @@ def buscar_imagen(nombre_base):
 
 st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
-st.write("Motor de Inteligencia Artificial (Conexión Directa Técnica) activo.")
+st.write("Motor de Inteligencia Artificial (Auto-Adaptable) activo.")
 st.markdown("---")
 
 col1, col2 = st.columns(2)
@@ -39,7 +37,40 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Conectando con Google mediante etiquetas técnicas..."):
+        with st.spinner("Buscando el motor gratuito más reciente..."):
+            try:
+                api_key = st.secrets.get("GEMINI_API_KEY")
+                if not api_key:
+                    st.error("⚠️ No se encontró la llave GEMINI_API_KEY.")
+                    st.stop()
+                    
+                genai.configure(api_key=api_key)
+                
+                # BUSCADOR INTELIGENTE: Lee tus modelos y agarra el más moderno automáticamente
+                modelo_elegido = None
+                modelos_disponibles = []
+                
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        modelos_disponibles.append(m.name)
+                        # Buscamos la versión "flash" más nueva disponible en tu cuenta
+                        if 'flash' in m.name.lower():
+                            modelo_elegido = m.name
+                            break 
+                
+                # Respaldo de seguridad
+                if not modelo_elegido and modelos_disponibles:
+                    modelo_elegido = modelos_disponibles[0]
+                    
+                if not modelo_elegido:
+                    st.error("Tu llave no tiene modelos habilitados.")
+                    st.stop()
+                    
+                modelo_ia = genai.GenerativeModel(modelo_elegido)
+            except Exception as e:
+                st.error(f"❌ Error al configurar la IA: {e}")
+                st.stop()
+
             texto_pdf = ""
             try:
                 reader = PyPDF2.PdfReader(factura_up)
@@ -49,12 +80,6 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 st.warning(f"Aviso: El PDF tiene un formato inusual ({e}).")
 
             img_tira = Image.open(tira_up)
-            if img_tira.mode != 'RGB':
-                img_tira = img_tira.convert('RGB')
-            
-            img_byte_arr = io.BytesIO()
-            img_tira.save(img_byte_arr, format='JPEG')
-            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
             
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
@@ -71,50 +96,14 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             }}
             """
             
-            api_key = st.secrets.get("GEMINI_API_KEY")
-            if not api_key:
-                st.error("⚠️ No se encontró la llave GEMINI_API_KEY.")
-                st.stop()
-                
-            # Enrutamiento automático a la versión técnica permitida por la cuenta
-            versiones_tecnicas = [
-                "gemini-1.5-flash-latest",
-                "gemini-1.5-flash-001",
-                "gemini-1.5-flash-002",
-                "gemini-1.5-flash"
-            ]
-            
-            respuesta_exitosa = None
-            error_ultimo = ""
-            
-            for version in versiones_tecnicas:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{version}:generateContent?key={api_key}"
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}]}],
-                    "generationConfig": {"temperature": 0.1}
-                }
-                
-                try:
-                    response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
-                    if response.status_code == 200:
-                        respuesta_exitosa = response.json()
-                        break
-                    else:
-                        error_ultimo = response.text
-                except Exception as e:
-                    error_ultimo = str(e)
-            
-            if not respuesta_exitosa:
-                st.error(f"❌ Los servidores rechazaron la conexión. Detalle: {error_ultimo}")
-                st.stop()
-                
             try:
-                texto_ia = respuesta_exitosa['candidates'][0]['content']['parts'][0]['text']
-                match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
+                respuesta = modelo_ia.generate_content([prompt, img_tira])
+                
+                match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
                 if match:
                     datos_ia = json.loads(match.group(0))
                 else:
-                    raise ValueError("Formato de respuesta incorrecto.")
+                    raise ValueError(f"Formato de respuesta incorrecto: {respuesta.text}")
                 
                 factura_num = datos_ia.get('factura', 'SD')
                 uuid = datos_ia.get('uuid', 'SD')
@@ -122,10 +111,10 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
                 desviacion = abs(vol_facturado - vol_descargado)
                 
-                st.success(f"✅ Análisis IA Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
+                st.success(f"✅ Análisis Completado (Usando el motor actual: {modelo_elegido}): {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
-                st.error(f"❌ Error leyendo los datos extraídos. Detalle: {e}")
+                st.error(f"❌ Error procesando el documento. Detalle: {e}")
                 st.stop()
 
             # --- GENERACIÓN DEL PDF ---
