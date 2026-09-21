@@ -3,6 +3,7 @@ import os
 import PyPDF2
 from PIL import Image
 import json
+import re
 import google.generativeai as genai
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
@@ -14,8 +15,8 @@ st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centere
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
-except:
-    st.error("⚠️ Falta agregar GEMINI_API_KEY en los Secrets de Streamlit.")
+except Exception as e:
+    st.error(f"⚠️ Error al conectar con la llave secreta: {e}")
 
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
@@ -42,36 +43,43 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("La IA está leyendo los documentos. Esto toma unos 5 segundos..."):
+        with st.spinner("La IA está analizando los documentos..."):
             texto_pdf = ""
             try:
                 reader = PyPDF2.PdfReader(factura_up)
                 for page in reader.pages:
                     texto_pdf += page.extract_text() + " "
-            except:
-                st.warning("El PDF no se pudo leer o es una imagen escaneada.")
+            except Exception as e:
+                st.warning(f"Aviso: El PDF tiene un formato inusual ({e}).")
 
             img_tira = Image.open(tira_up)
             
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
-            Aquí tienes dos evidencias:
-            1. Texto de la factura: {texto_pdf}
-            2. Imagen del ticket Veeder-Root adjunta.
+            Analiza estos dos documentos:
+            1. Texto extraído de la factura: {texto_pdf}
+            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT').
             
-            Extrae los datos y devuelve ÚNICAMENTE un archivo JSON válido con esta estructura exacta, sin texto extra antes ni después:
+            Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saludos ni explicaciones:
             {{
                 "uuid": "folio fiscal de 36 caracteres",
-                "factura": "numero de factura ej B4655",
-                "litros_facturados": numero decimal de litros (cantidad de producto magna),
-                "litros_descargados": numero decimal del 'AUMENTO NETO CT' que dice en el ticket de la imagen
+                "factura": "numero de factura",
+                "litros_facturados": numero decimal (cantidad de Magna),
+                "litros_descargados": numero decimal (aumento neto del ticket)
             }}
             """
             
             try:
                 respuesta = modelo_ia.generate_content([prompt, img_tira])
-                texto_json = respuesta.text.replace('```json', '').replace('```', '').strip()
-                datos_ia = json.loads(texto_json)
+                
+                # Trampa de extracción: Ignora cualquier texto extra que la IA agregue por error
+                match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
+                
+                if match:
+                    texto_json = match.group(0)
+                    datos_ia = json.loads(texto_json)
+                else:
+                    raise ValueError(f"Formato no esperado. Respuesta cruda de la IA: {respuesta.text}")
                 
                 factura_num = datos_ia.get('factura', 'SD')
                 uuid = datos_ia.get('uuid', 'SD')
@@ -82,9 +90,11 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 st.success(f"✅ Análisis IA Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
-                st.error("Hubo un problema de conexión con la IA o leyendo los formatos. Revisa que el ticket sea legible.")
+                # Si falla, ahora mostrará exactamente por qué falló
+                st.error(f"❌ Error interno de lectura. Detalle para soporte: {e}")
                 st.stop()
 
+            # --- GENERACIÓN DEL PDF ---
             ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_{factura_num}.pdf")
             doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
             elementos = []
