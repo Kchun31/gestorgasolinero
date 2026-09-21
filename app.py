@@ -24,7 +24,7 @@ def buscar_imagen(nombre_base):
 
 st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
-st.write("Motor de Inteligencia Artificial (Conexión Directa) activo.")
+st.write("Motor de Inteligencia Artificial (Conexión Directa Técnica) activo.")
 st.markdown("---")
 
 col1, col2 = st.columns(2)
@@ -39,7 +39,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Conectando de forma directa con los servidores de Google..."):
+        with st.spinner("Conectando con Google mediante etiquetas técnicas..."):
             texto_pdf = ""
             try:
                 reader = PyPDF2.PdfReader(factura_up)
@@ -48,7 +48,6 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             except Exception as e:
                 st.warning(f"Aviso: El PDF tiene un formato inusual ({e}).")
 
-            # Preparar la fotografía térmica para enviarla codificada por internet
             img_tira = Image.open(tira_up)
             if img_tira.mode != 'RGB':
                 img_tira = img_tira.convert('RGB')
@@ -63,7 +62,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             1. Texto extraído de la factura: {texto_pdf}
             2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT').
             
-            Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saludos ni explicaciones:
+            Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin texto adicional:
             {{
                 "uuid": "folio fiscal de 36 caracteres",
                 "factura": "numero de factura",
@@ -74,36 +73,48 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
-                st.error("⚠️ No se encontró la llave GEMINI_API_KEY en los Misterios de Streamlit.")
+                st.error("⚠️ No se encontró la llave GEMINI_API_KEY.")
                 st.stop()
                 
-            # CONEXIÓN DIRECTA (Evita los errores 404 de la librería defectuosa)
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-            payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}
-                    ]
-                }],
-                "generationConfig": {"temperature": 0.1}
-            }
+            # Enrutamiento automático a la versión técnica permitida por la cuenta
+            versiones_tecnicas = [
+                "gemini-1.5-flash-latest",
+                "gemini-1.5-flash-001",
+                "gemini-1.5-flash-002",
+                "gemini-1.5-flash"
+            ]
             
+            respuesta_exitosa = None
+            error_ultimo = ""
+            
+            for version in versiones_tecnicas:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{version}:generateContent?key={api_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}]}],
+                    "generationConfig": {"temperature": 0.1}
+                }
+                
+                try:
+                    response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
+                    if response.status_code == 200:
+                        respuesta_exitosa = response.json()
+                        break
+                    else:
+                        error_ultimo = response.text
+                except Exception as e:
+                    error_ultimo = str(e)
+            
+            if not respuesta_exitosa:
+                st.error(f"❌ Los servidores rechazaron la conexión. Detalle: {error_ultimo}")
+                st.stop()
+                
             try:
-                response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
-                datos_respuesta = response.json()
-                
-                if response.status_code != 200:
-                    raise ValueError(f"Google rechazó la conexión directa: {datos_respuesta.get('error', {}).get('message', response.text)}")
-                    
-                texto_ia = datos_respuesta['candidates'][0]['content']['parts'][0]['text']
-                
-                # Extraer solo la información numérica de la respuesta
+                texto_ia = respuesta_exitosa['candidates'][0]['content']['parts'][0]['text']
                 match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
                 if match:
                     datos_ia = json.loads(match.group(0))
                 else:
-                    raise ValueError("La IA respondió en un formato incorrecto.")
+                    raise ValueError("Formato de respuesta incorrecto.")
                 
                 factura_num = datos_ia.get('factura', 'SD')
                 uuid = datos_ia.get('uuid', 'SD')
@@ -114,10 +125,10 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 st.success(f"✅ Análisis IA Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
-                st.error(f"❌ Error en la conexión directa. Detalle técnico: {e}")
+                st.error(f"❌ Error leyendo los datos extraídos. Detalle: {e}")
                 st.stop()
 
-            # --- GENERACIÓN DEL PDF CORPORATIVO ---
+            # --- GENERACIÓN DEL PDF ---
             ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_{factura_num}.pdf")
             doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
             elementos = []
