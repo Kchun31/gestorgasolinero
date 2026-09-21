@@ -14,8 +14,6 @@ st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centere
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Motor actualizado a la versión Pro
-    modelo_ia = genai.GenerativeModel('gemini-1.5-pro-latest')
 except Exception as e:
     st.error(f"⚠️ Error al conectar con la llave secreta: {e}")
 
@@ -44,7 +42,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("La IA está analizando los documentos..."):
+        with st.spinner("La IA está buscando el servidor disponible y analizando documentos..."):
             texto_pdf = ""
             try:
                 reader = PyPDF2.PdfReader(factura_up)
@@ -70,16 +68,32 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             }}
             """
             
+            respuesta = None
+            error_final = ""
+            
+            # SISTEMA ANTIFALLOS: Prueba todos los motores posibles hasta que uno funcione
+            modelos_disponibles = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro-vision']
+            
+            for nombre_modelo in modelos_disponibles:
+                try:
+                    modelo_ia = genai.GenerativeModel(nombre_modelo)
+                    respuesta = modelo_ia.generate_content([prompt, img_tira])
+                    break  # Si el modelo funciona, sale de la búsqueda y continúa
+                except Exception as e:
+                    error_final = str(e)
+                    continue  # Si falla (Error 404), intenta inmediatamente con el siguiente
+            
             try:
-                respuesta = modelo_ia.generate_content([prompt, img_tira])
-                
+                if not respuesta:
+                    raise ValueError(f"Tu llave no autorizó ningún modelo. Detalle: {error_final}")
+
+                # Limpia cualquier texto extra que la IA intente responder
                 match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
-                
                 if match:
                     texto_json = match.group(0)
                     datos_ia = json.loads(texto_json)
                 else:
-                    raise ValueError(f"Formato no esperado. Respuesta cruda de la IA: {respuesta.text}")
+                    raise ValueError(f"Formato no esperado por parte de la IA.")
                 
                 factura_num = datos_ia.get('factura', 'SD')
                 uuid = datos_ia.get('uuid', 'SD')
@@ -93,6 +107,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 st.error(f"❌ Error interno de lectura. Detalle para soporte: {e}")
                 st.stop()
 
+            # --- GENERACIÓN DEL PDF ---
             ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_{factura_num}.pdf")
             doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
             elementos = []
