@@ -2,15 +2,15 @@ import streamlit as st
 import os
 import re
 import PyPDF2
+import pytesseract
+from PIL import Image
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- CONFIGURACIÓN DE LA PÁGINA WEB ---
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
 
-# RUTAS EN LA NUBE
 carpeta_entrada = "temp_entrada"
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_entrada, exist_ok=True)
@@ -28,114 +28,96 @@ def buscar_logo():
         if ruta: return ruta
     return None
 
-# ==========================================
-# INTERFAZ GRÁFICA
-# ==========================================
 st.title("⛽ Portal de Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
-st.write("Sube la factura y la tira de Veeder-Root. El sistema extraerá los litros automáticamente.")
+st.write("Sube la factura y la foto Veeder-Root. El sistema extraerá el Facturado del PDF y el Aumento Neto de la fotografía.")
 
 st.markdown("---")
-
 col1, col2 = st.columns(2)
 with col1:
-    factura_up = st.file_uploader("📄 1. Sube la Factura (PDF)", type=['pdf'])
+    factura_up = st.file_uploader("📄 1. Factura (PDF)", type=['pdf'])
 with col2:
-    tira_up = st.file_uploader("🧾 2. Sube la Foto Veeder-Root", type=['jpg', 'jpeg', 'png'])
-
+    tira_up = st.file_uploader("🧾 2. Tira Veeder-Root (Foto)", type=['jpg', 'jpeg', 'png'])
 st.markdown("---")
 
-# ==========================================
-# MOTOR DE PROCESAMIENTO
-# ==========================================
-if st.button("🚀 Procesar y Generar Bitácora Automática", type="primary", use_container_width=True):
+if st.button("🚀 Escanear Evidencias y Generar Bitácora", type="primary", use_container_width=True):
     if not factura_up or not tira_up:
         st.error("⚠️ Falta subir algún documento de evidencia.")
     else:
-        with st.spinner("Escaneando PDF con IA para buscar litros exactos..."):
-            
+        with st.spinner("Escaneando PDF y procesando fotografía de la tira con Inteligencia Artificial..."):
             for folder in [carpeta_entrada, carpeta_destino]:
                 for f in os.listdir(folder):
                     os.remove(os.path.join(folder, f))
             
             ruta_factura = os.path.join(carpeta_entrada, factura_up.name)
-            with open(ruta_factura, "wb") as f:
-                f.write(factura_up.getbuffer())
+            with open(ruta_factura, "wb") as f: f.write(factura_up.getbuffer())
                 
             ruta_tira = os.path.join(carpeta_entrada, tira_up.name)
-            with open(ruta_tira, "wb") as f:
-                f.write(tira_up.getbuffer())
+            with open(ruta_tira, "wb") as f: f.write(tira_up.getbuffer())
 
-            factura_num = "[NO DETECTADA]"
-            uuid = "[NO DETECTADO]"
-            vol_facturado = 0.0
+            factura_num, uuid = "[NO DETECTADA]", "[NO DETECTADO]"
+            vol_facturado, vol_descargado = 0.0, 0.0
 
+            # 1. LEER EL PDF (LITROS FACTURADOS)
             try:
                 with open(ruta_factura, 'rb') as f:
-                    reader = PyPDF2.PdfReader(f)
-                    texto_completo = ""
-                    for page in reader.pages:
-                        texto_completo += page.extract_text() + " "
-                        
-                # 1. Extraer Folios
-                match_uuid = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', texto_completo)
+                    texto_pdf = " ".join([page.extract_text() for page in PyPDF2.PdfReader(f).pages])
+                
+                match_uuid = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', texto_pdf)
                 if match_uuid: uuid = match_uuid.group(0).upper()
                     
-                match_factura = re.search(r'\b[A-Z][0-9]{3,6}\b', texto_completo)
+                match_factura = re.search(r'\b[A-Z][0-9]{3,6}\b', texto_pdf)
                 if match_factura: factura_num = match_factura.group(0)
 
-                # ========================================================
-                # 2. MOTOR ESTRICTO DE LECTURA DE LITROS (IGNORANDO DINERO)
-                # ========================================================
-                
-                # A) Primero busca números directamente pegados a palabras como "LTR" o "Cantidad"
-                patrones_estrictos = re.findall(r'(?:LTR|Litros|Cantidad|Volumen)[\s:a-zA-Z]*?([0-9]{2,3}(?:,[0-9]{3})*(?:\.[0-9]{2,6})?)', texto_completo, re.IGNORECASE)
-                
-                if patrones_estrictos:
-                    for match in patrones_estrictos:
-                        num = float(match.replace(',', ''))
+                # Busca números grandes en el PDF que NO tengan el símbolo $
+                numeros_pdf = re.finditer(r'([\$]?)\s*([0-9]{2,3}(?:,?[0-9]{3})*(?:\.[0-9]{1,4})?)', texto_pdf)
+                posibles_litros = []
+                for m in numeros_pdf:
+                    if m.group(1) != '$':
+                        num = float(m.group(2).replace(',', ''))
                         if 15000 <= num <= 68000:
-                            vol_facturado = num
-                            break
-
-                # B) Si falla, busca números grandes pero EXCLUYE los que están cerca de "Subtotal" o "Total"
-                if vol_facturado == 0.0:
-                    matches_generales = re.finditer(r'([\$]?)\s*([0-9]{2,3}(?:,[0-9]{3})*(?:\.[0-9]{2,6})?)', texto_completo)
-                    posibles_litros = []
-                    
-                    for m in matches_generales:
-                        es_dinero = m.group(1) == '$'
-                        num_gen = float(m.group(2).replace(',', ''))
-                        
-                        if 15000 <= num_gen <= 68000 and not es_dinero:
-                            # Revisa el vecindario del número para ver si es dinero disfrazado
-                            start = max(0, m.start() - 35)
-                            end = min(len(texto_completo), m.end() + 35)
-                            contexto = texto_completo[start:end].upper()
-                            
-                            # Si alrededor del número dice Total, Importe o IVA, lo ignora completamente
-                            if "SUBTOTAL" not in contexto and "TOTAL" not in contexto and "IMPORTE" not in contexto and "IVA" not in contexto:
-                                posibles_litros.append(num_gen)
-                    
-                    if posibles_litros:
-                        # Si aún quedan varios números, asume que el menor es el volumen (ej. 43,439) y el mayor el precio (ej. 63,545)
-                        vol_facturado = min(posibles_litros)
-
+                            start, end = max(0, m.start() - 30), min(len(texto_pdf), m.end() + 30)
+                            ctx = texto_pdf[start:end].upper()
+                            # Doble confirmación para evitar que lea el "Subtotal" o "Importe" sin $
+                            if not any(x in ctx for x in ["SUBTOTAL", "TOTAL", "IVA", "IMPORTE"]):
+                                posibles_litros.append(num)
+                
+                if posibles_litros:
+                    vol_facturado = min(posibles_litros)
             except Exception as e:
-                st.warning(f"Hubo un problema leyendo la factura: {e}")
+                st.warning(f"Error leyendo PDF: {e}")
 
-            # ========================================================
-            # 3. CÁLCULO DE DESCARGA (VEEDER-ROOT)
-            # ========================================================
-            # Se deduce la descarga restando una desviación estándar simulada (~306 litros de merma/evaporación)
-            vol_descargado = vol_facturado - 306.00 if vol_facturado > 0 else 43133.00
+            # 2. LEER LA FOTOGRAFÍA VEEDER-ROOT (LITROS DESCARGADOS) MEDIANTE OCR
+            try:
+                img = Image.open(ruta_tira)
+                texto_tira = pytesseract.image_to_string(img)
+                
+                numeros_tira = re.finditer(r'([0-9]{2,3}(?:,?[0-9]{3})*(?:\.[0-9]{1,4})?)', texto_tira)
+                posibles_descarga = []
+                for m in numeros_tira:
+                    num = float(m.group(1).replace(',', ''))
+                    if 15000 <= num <= 68000:
+                        posibles_descarga.append(num)
+                
+                if posibles_descarga:
+                    # Toma el número de la foto que más se acerque al facturado (para descartar otros folios grandes en la foto)
+                    if vol_facturado > 0:
+                        vol_descargado = min(posibles_descarga, key=lambda x: abs(x - vol_facturado))
+                    else:
+                        vol_descargado = posibles_descarga[0]
+            except Exception as e:
+                st.warning(f"Error del OCR al leer la foto: {e}")
+
+            # Seguro contra fallas de escaneo por luz o arrugas en el papel
+            if vol_facturado == 0.0 or vol_descargado == 0.0:
+                st.error("❌ El sistema de IA visual no pudo leer los números claramente. Verifica que la foto de la tira tenga buena iluminación y no esté borrosa.")
+                st.stop()
+
             desviacion = abs(vol_facturado - vol_descargado)
             
             # --- DATOS FIJOS ---
-            rfc_estacion = "CBA140131V12"
-            permiso_cre = "PL/3910/EXP/ES/2015"
-            producto = "REGULAR (MAGNA)"
-            proveedor = "UNEGAS DISTRIBUCION Y ALMACENAMIENTO (UDA171106KV9)"
+            rfc_estacion, permiso_cre = "CBA140131V12", "PL/3910/EXP/ES/2015"
+            producto, proveedor = "REGULAR (MAGNA)", "UNEGAS DISTRIBUCION Y ALMACENAMIENTO (UDA171106KV9)"
             autotanque = "Emb: 779274 | Tq: 23UY9X | Tr: 33BE7H | Op: Javier Arturo García"
             destino = "Combustibles Buenos Aires, Campo 4, Janos, Chih."
 
@@ -183,14 +165,14 @@ if st.button("🚀 Procesar y Generar Bitácora Automática", type="primary", us
 
             data_control = [
                 ["PARÁMETRO / CONTROL", "REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)", "CUMPLE SASISOPA", "ESTATUS / VALORES"],
-                [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada mediante lectura física de la consola Veeder-Root.<br/>• Aumento Neto CT: <b>{vol_descargado:,.2f} L</b><br/><i>(Evidencia fotográfica adjunta en la Hoja 2)</i>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado: {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
+                [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada mediante lectura física de la consola Veeder-Root.<br/>• Aumento Neto CT: <b>{vol_descargado:,.2f} L</b><br/><i>(Lectura OCR adjunta en Anexo 2)</i>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado: {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
             ]
             t_control = Table(data_control, colWidths=[110, 250, 90, 110])
             t_control.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#a81c1c')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('ALIGN', (2, 1), (2, 1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3)]))
             elementos.append(t_control)
             elementos.append(Spacer(1, 4))
 
-            data_obs = [["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Tira de Veeder-Root validada y adjunta en anexo fotográfico de la Hoja 2. Operación conforme a SASISOPA y NOM-005.", estilo_celda)]]
+            data_obs = [["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Aumento Neto comprobado mediante lectura de Inteligencia Artificial sobre la tira Veeder-Root.", estilo_celda)]]
             t_obs = Table(data_obs, colWidths=[130, 430])
             t_obs.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#f7f7f7')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3), ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
             elementos.append(t_obs)
@@ -211,21 +193,21 @@ if st.button("🚀 Procesar y Generar Bitácora Automática", type="primary", us
             elementos.append(Spacer(1, 15))
 
             estilo_tit_anexo = ParagraphStyle('TitAnexo', fontName='Helvetica-Bold', fontSize=9, textColor=colors.HexColor('#a81c1c'), alignment=1, spaceAfter=8)
-            elementos.append(Paragraph(f"ANEXO DE EVIDENCIA: TIRA ORIGINAL DE CONSOLA VEEDER-ROOT", estilo_tit_anexo))
+            elementos.append(Paragraph(f"ANEXO DE EVIDENCIA: LECTURA VISUAL DE TIRA VEEDER-ROOT", estilo_tit_anexo))
 
             img_veeder = RLImage(ruta_tira, width=190, height=300)
             img_veeder.hAlign = 'CENTER'
             elementos.append(img_veeder)
 
             elementos.append(Spacer(1, 10))
-            data_notas_anexo = [["Detalles del Registro de Descarga:", Paragraph(f"• Producto: T1: Magna (Regular) | Factura: {factura_num} | Volumen Facturado: {vol_facturado:,.2f} L<br/>• Volúmenes Calculados: Aumento Neto CT: {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]]
+            data_notas_anexo = [["Detalles de Lectura de la IA:", Paragraph(f"• Producto: Magna (Regular) | Factura (PDF): {factura_num} | Litros Facturados: {vol_facturado:,.2f} L<br/>• Litros Descargados (Leídos de la Foto): {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]]
             t_notas = Table(data_notas_anexo, colWidths=[130, 430])
             t_notas.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#fdfdfd')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')), ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
             elementos.append(t_notas)
 
             doc.build(elementos)
 
-            st.success(f"✅ ¡Éxito! Bitácora generada 100% en automático.")
+            st.success(f"✅ ¡Éxito! Bitácora generada cruzando los datos del PDF y la fotografía automáticamente.")
 
             with open(ruta_pdf, "rb") as pdf_file:
                 st.download_button(
