@@ -44,8 +44,8 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     else:
         with st.spinner("Conectando con el servidor de Google y analizando documentos..."):
             try:
-                # ¡AQUÍ ESTÁ LA SOLUCIÓN! Usamos exactamente el motor nuevo que Google pidió.
-                modelo_ia = genai.GenerativeModel('gemini-3.1-pro-preview')
+                # Usamos el motor Flash que tiene una cuota gratuita alta (15 por minuto)
+                modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 st.error(f"❌ Error configurando el motor IA. Detalle: {e}")
                 st.stop()
