@@ -4,6 +4,8 @@ import PyPDF2
 from PIL import Image
 import json
 import re
+import base64
+import requests
 import google.generativeai as genai
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
@@ -15,7 +17,6 @@ st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centere
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
 
-# --- SISTEMA DE MEMORIA DE FOLIO BLINDADO ---
 ARCHIVO_FOLIO = "folio_historico.txt"
 
 def obtener_folio():
@@ -54,15 +55,16 @@ folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, 
 
 st.markdown("---")
 
-if st.button("🚀 Procesar y Generar Bitácora", type="primary", use_container_width=True):
+# SI TU PÁGINA SE ACTUALIZA BIEN, EL BOTÓN ROJO DEBE DECIR ESTO:
+if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Procesando documentos con Inteligencia Artificial..."):
+        with st.spinner("Creando bitácora y enviando directo a la nube..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
-                    st.error("⚠️ No se encontró la llave secreta.")
+                    st.error("⚠️ No se encontró la llave de Gemini.")
                     st.stop()
                     
                 genai.configure(api_key=api_key)
@@ -110,13 +112,9 @@ if st.button("🚀 Procesar y Generar Bitácora", type="primary", use_container_
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
                 desviacion = abs(vol_facturado - vol_descargado)
                 
-                # --- ACTUALIZACIÓN Y RESERVA DEL FOLIO ---
                 siguiente_folio = int(folio_input) + 1
                 guardar_folio(siguiente_folio)
                 st.session_state.folio_actual = siguiente_folio
-                
-                st.success(f"✅ Recepción validada con éxito: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
-                st.info(f"⏭️ Folio {folio_input} procesado. El sistema ha reservado automáticamente el folio <b>{siguiente_folio}</b> para tu próxima descarga.", icon="📌")
                 
             except Exception as e:
                 st.error(f"❌ Error procesando el documento. Detalle: {e}")
@@ -195,37 +193,26 @@ if st.button("🚀 Procesar y Generar Bitácora", type="primary", use_container_
 
             doc.build(elementos)
 
-            # Guardamos en la sesión para mostrar los botones de descarga y envío
-            st.session_state.pdf_listo = ruta_pdf
-            st.session_state.nombre_pdf = nombre_archivo_pdf
+            # --- ENVÍO AUTÓNOMO A GOOGLE DRIVE MEDIANTE EL PUENTE ---
+            try:
+                url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
+                if url_script:
+                    with open(ruta_pdf, "rb") as f:
+                        pdf_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    
+                    res = requests.post(url_script, data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf})
+                    
+                    if "éxito" in res.text.lower():
+                        st.success(f"✅ Recepción validada: {vol_facturado:,.2f} L vs {vol_descargado:,.2f} L.")
+                        st.success("☁️ ¡Bitácora enviada y guardada 100% en automático en tu Drive!")
+                        st.info(f"⏭️ El sistema ha reservado el folio <b>{siguiente_folio}</b> para la próxima.", icon="📌")
+                    else:
+                        st.warning(f"⚠️ Error del puente Drive: {res.text}")
+                else:
+                    st.warning("⚠️ Falta configurar URL_GOOGLE_SCRIPT en los Misterios.")
+            except Exception as e:
+                st.warning(f"⚠️ Error enviando a Drive: {e}")
 
-# --- SECCIÓN DE ACCIONES POST-PROCESAMIENTO ---
-if 'pdf_listo' in st.session_state and os.path.exists(st.session_state.pdf_listo):
-    st.markdown("---")
-    st.success("📄 ¡La Bitácora Oficial está lista para guardarse!")
-    
-    col_dl, col_drive = st.columns(2)
-    
-    with col_dl:
-        with open(st.session_state.pdf_listo, "rb") as pdf_file:
-            st.download_button(
-                label="⬇️ Descargar PDF (PC)", 
-                data=pdf_file, 
-                file_name=st.session_state.nombre_pdf, 
-                mime="application/pdf", 
-                type="primary",
-                use_container_width=True
-            )
-            
-    with col_drive:
-        # Enlace directo optimizado para abrir Google Drive en una pestaña nueva y subir el archivo cómodamente
-        id_carp = st.secrets.get("ID_CARPETA", "")
-        url_drive = f"https://drive.google.com/drive/folders/{id_carp}" if id_carp else "https://drive.google.com/"
-        
-        st.markdown(f"""
-            <a href="{url_drive}" target="_blank">
-                <button style="width: 100%; background-color: #f0f2f6; color: #262730; border: 1px solid #d6d6d6; padding: 10px; border-radius: 4px; font-weight: 600; cursor: pointer;">
-                    ☁️ Abrir Carpeta de Drive
-                </button>
-            </a>
-        """, unsafe_allow_html=True)
+            # Dejamos la opción de descarga manual por si a caso
+            with open(ruta_pdf, "rb") as pdf_file:
+                st.download_button(label="⬇️ Descargar Copia a tu Computadora", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf")
