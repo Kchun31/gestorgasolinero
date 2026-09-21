@@ -1,5 +1,5 @@
 streamlit
 reportlab
 PyPDF2
-pytesseract
 Pillow
+google-generativeai
