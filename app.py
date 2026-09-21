@@ -12,6 +12,9 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
+# --- LIBRERÍA PARA PEGAR DESDE PORTAPAPELES ---
+from streamlit_paste_button import paste_image_button
+
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
 
 carpeta_destino = "temp_destino"
@@ -46,19 +49,37 @@ st.subheader("Combustibles Buenos Aires S.A. de C.V.")
 st.markdown("---")
 
 col1, col2 = st.columns(2)
+
 with col1:
-    factura_up = st.file_uploader("📄 1. Factura (PDF)", type=['pdf'])
+    # Botón clásico ideal para seleccionar el PDF en el celular
+    factura_up = st.file_uploader("📄 1. Sube tu Factura (PDF)", type=['pdf'])
+    
 with col2:
-    tira_up = st.file_uploader("🧾 2. Tira Veeder-Root (Foto)", type=['jpg', 'jpeg', 'png'])
+    st.markdown("🧾 **2. Tira Veeder-Root (Foto)**")
+    # Botón de pegar por si estás en la PC de la oficina
+    paste_result = paste_image_button(
+        label="📋 Pegar imagen (Si estás en PC)",
+        background_color="#FF4B4B",
+        hover_background_color="#FF6666"
+    )
+    
+    img_tira = None
+    if paste_result.image_data is not None:
+        img_tira = paste_result.image_data
+        st.success("✅ Imagen pegada correctamente.")
+    else:
+        # Botón clásico ideal para tomar la foto directo con la cámara del celular
+        tira_up = st.file_uploader("O toma/sube la foto:", type=['jpg', 'jpeg', 'png'])
+        if tira_up:
+            img_tira = Image.open(tira_up)
 
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
 
 st.markdown("---")
 
-# SI TU PÁGINA SE ACTUALIZA BIEN, EL BOTÓN ROJO DEBE DECIR ESTO:
 if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
-    if not factura_up or not tira_up:
-        st.error("⚠️ Sube ambos documentos para continuar.")
+    if not factura_up or img_tira is None:
+        st.error("⚠️ Sube el PDF y toma/sube la imagen de la tira para continuar.")
     else:
         with st.spinner("Creando bitácora y enviando directo a la nube..."):
             try:
@@ -80,8 +101,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                     texto_pdf += page.extract_text() + " "
             except Exception:
                 pass
-
-            img_tira = Image.open(tira_up)
             
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
@@ -182,7 +201,10 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(Spacer(1, 15))
             elementos.append(Paragraph(f"ANEXO DE EVIDENCIA: LECTURA VISUAL DE TIRA VEEDER-ROOT", ParagraphStyle('TitAnexo', fontName='Helvetica-Bold', fontSize=9, textColor=colors.HexColor('#a81c1c'), alignment=1, spaceAfter=8)))
             
-            img_veeder_pdf = RLImage(tira_up, width=190, height=300)
+            temp_img_path = "temp_veeder.png"
+            img_tira.save(temp_img_path)
+            
+            img_veeder_pdf = RLImage(temp_img_path, width=190, height=300)
             img_veeder_pdf.hAlign = 'CENTER'
             elementos.append(img_veeder_pdf)
             elementos.append(Spacer(1, 10))
@@ -213,6 +235,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception as e:
                 st.warning(f"⚠️ Error enviando a Drive: {e}")
 
-            # Dejamos la opción de descarga manual por si a caso
+            # Dejamos la opción de descarga manual por si acaso
             with open(ruta_pdf, "rb") as pdf_file:
-                st.download_button(label="⬇️ Descargar Copia a tu Computadora", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf")
+                st.download_button(label="⬇️ Descargar Copia a tu Celular/PC", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf")
