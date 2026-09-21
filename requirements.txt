@@ -1,3 +1,5 @@
 streamlit
 reportlab
 PyPDF2
+pytesseract
+Pillow
