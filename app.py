@@ -15,14 +15,33 @@ st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centere
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
 
+# --- SISTEMA DE MEMORIA DE FOLIO ---
+ARCHIVO_FOLIO = "folio_historico.txt"
+
+def obtener_folio():
+    if os.path.exists(ARCHIVO_FOLIO):
+        with open(ARCHIVO_FOLIO, "r") as f:
+            try:
+                return int(f.read().strip())
+            except:
+                return 1
+    return 1
+
+def guardar_folio(nuevo_folio):
+    with open(ARCHIVO_FOLIO, "w") as f:
+        f.write(str(nuevo_folio))
+
 def buscar_imagen(nombre_base):
     for ext in ["png", "jpg", "jpeg", "PNG", "JPG"]:
         if os.path.exists(f"{nombre_base}.{ext}"): return f"{nombre_base}.{ext}"
     return None
 
+# Inicializar el folio leyendo la memoria del servidor
+if 'folio_actual' not in st.session_state:
+    st.session_state.folio_actual = obtener_folio()
+
 st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
-st.write("Motor de Inteligencia Artificial (Versión 3.6 Flash) activo.")
 st.markdown("---")
 
 col1, col2 = st.columns(2)
@@ -31,25 +50,26 @@ with col1:
 with col2:
     tira_up = st.file_uploader("🧾 2. Tira Veeder-Root (Foto)", type=['jpg', 'jpeg', 'png'])
 
+# La casilla identifica automáticamente el folio, pero permite corrección manual si es necesario
+folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
+
 st.markdown("---")
 
-if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_container_width=True):
+if st.button("🚀 Procesar Recepción", type="primary", use_container_width=True):
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Conectando al motor Gemini 3.6 Flash..."):
+        with st.spinner("Procesando documentos..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
-                    st.error("⚠️ No se encontró la llave GEMINI_API_KEY.")
+                    st.error("⚠️ No se encontró la llave secreta en Misterios.")
                     st.stop()
                     
                 genai.configure(api_key=api_key)
-                
-                # LA SOLUCIÓN DEFINITIVA: Usar exactamente la versión que Google pide en el error.
                 modelo_ia = genai.GenerativeModel('gemini-3.6-flash')
             except Exception as e:
-                st.error(f"❌ Error al configurar la IA: {e}")
+                st.error(f"❌ Error de configuración: {e}")
                 st.stop()
 
             texto_pdf = ""
@@ -58,7 +78,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 for page in reader.pages:
                     texto_pdf += page.extract_text() + " "
             except Exception as e:
-                st.warning(f"Aviso: El PDF tiene un formato inusual ({e}).")
+                st.warning("Aviso: El PDF tiene un formato inusual.")
 
             img_tira = Image.open(tira_up)
             
@@ -84,7 +104,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 if match:
                     datos_ia = json.loads(match.group(0))
                 else:
-                    raise ValueError(f"Formato de respuesta incorrecto: {respuesta.text}")
+                    raise ValueError("Formato incorrecto.")
                 
                 factura_num = datos_ia.get('factura', 'SD')
                 uuid = datos_ia.get('uuid', 'SD')
@@ -92,14 +112,22 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
                 desviacion = abs(vol_facturado - vol_descargado)
                 
-                st.success(f"✅ Análisis Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
-            
+                st.success(f"✅ Recepción validada con éxito: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
+                
+                # Actualiza el folio automáticamente para la SIGUIENTE bitácora
+                siguiente_folio = folio_input + 1
+                guardar_folio(siguiente_folio)
+                st.session_state.folio_actual = siguiente_folio
+                st.info(f"⏭️ El sistema ha reservado automáticamente el folio {siguiente_folio} para tu próxima descarga.")
+                
             except Exception as e:
                 st.error(f"❌ Error procesando el documento. Detalle: {e}")
                 st.stop()
 
-            # --- GENERACIÓN DEL PDF ---
-            ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_{factura_num}.pdf")
+            # --- GENERACIÓN DEL PDF LIMPIO Y OFICIAL ---
+            folio_str = str(folio_input).zfill(4) # Formato a 4 dígitos: 0001, 0002...
+            ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_Folio_{folio_str}.pdf")
+            
             doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
             elementos = []
             styles = getSampleStyleSheet()
@@ -116,7 +144,9 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
 
             estilo_sasi = ParagraphStyle('Sasi', fontName='Helvetica-Bold', fontSize=6.5, textColor=colors.white, alignment=1)
             estilo_bita = ParagraphStyle('Bita', fontName='Helvetica-Bold', fontSize=9, textColor=colors.HexColor('#a81c1c'), alignment=1)
-            t_titulos = Table([[Paragraph("SISTEMA DE ADMINISTRACIÓN (SASISOPA) • NOM-005-ASEA-2016", estilo_sasi)], [Paragraph("BITÁCORA OFICIAL DE RECEPCIÓN, DESCARGA Y CONTROL VEEDER-ROOT", estilo_bita)]], colWidths=[560])
+            
+            # Se integra el Folio en el encabezado rojo
+            t_titulos = Table([[Paragraph("SISTEMA DE ADMINISTRACIÓN (SASISOPA) • NOM-005-ASEA-2016", estilo_sasi)], [Paragraph(f"BITÁCORA OFICIAL DE RECEPCIÓN, DESCARGA Y CONTROL VEEDER-ROOT   |   FOLIO: {folio_str}", estilo_bita)]], colWidths=[560])
             t_titulos.setStyle(TableStyle([('BACKGROUND', (0,0), (0,0), colors.HexColor('#a81c1c')), ('BACKGROUND', (0,1), (0,1), colors.white), ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#a81c1c')), ('INNERGRID', (0,0), (-1,-1), 1, colors.HexColor('#a81c1c')), ('TOPPADDING', (0,0), (-1,-1), 4), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
             elementos.append(t_titulos)
             elementos.append(Spacer(1, 4))
@@ -133,13 +163,13 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
 
             t_control = Table([
                 ["PARÁMETRO / CONTROL", "REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)", "CUMPLE SASISOPA", "ESTATUS / VALORES"],
-                [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada.<br/>• Aumento Neto CT: <b>{vol_descargado:,.2f} L</b><br/><i>(Validación por Inteligencia Artificial en Anexo 2)</i>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado: {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
+                [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada.<br/>• Aumento Neto CT: <b>{vol_descargado:,.2f} L</b>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado: {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
             ], colWidths=[110, 250, 90, 110])
             t_control.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#a81c1c')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('ALIGN', (2, 1), (2, 1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333'))]))
             elementos.append(t_control)
             elementos.append(Spacer(1, 4))
 
-            t_obs = Table([["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Aumento Neto validado mediante registro fotográfico y auditoría automatizada en Anexo 2.", estilo_celda)]], colWidths=[130, 430])
+            t_obs = Table([["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Aumento Neto validado mediante registro fotográfico en Anexo 2.", estilo_celda)]], colWidths=[130, 430])
             t_obs.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#f7f7f7')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
             elementos.append(t_obs)
             elementos.append(Spacer(1, 20))
@@ -161,11 +191,11 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             elementos.append(img_veeder_pdf)
             elementos.append(Spacer(1, 10))
 
-            t_notas = Table([["Auditoría IA:", Paragraph(f"• Factura: {factura_num} | Litros Facturados: {vol_facturado:,.2f} L<br/>• Litros Descargados: {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]], colWidths=[130, 430])
+            t_notas = Table([["Auditoría Documental:", Paragraph(f"• Factura: {factura_num} | Litros Facturados: {vol_facturado:,.2f} L<br/>• Litros Descargados: {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]], colWidths=[130, 430])
             t_notas.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#fdfdfd')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
             elementos.append(t_notas)
 
             doc.build(elementos)
 
             with open(ruta_pdf, "rb") as pdf_file:
-                st.download_button(label="⬇️ Descargar Bitácora PDF (Auditada)", data=pdf_file, file_name=f"Bitacora_Factura_{factura_num}.pdf", mime="application/pdf", type="primary")
+                st.download_button(label="⬇️ Descargar Bitácora Oficial PDF", data=pdf_file, file_name=f"Bitacora_{folio_str}_{factura_num}.pdf", mime="application/pdf", type="primary")
