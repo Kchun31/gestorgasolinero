@@ -22,7 +22,7 @@ def buscar_imagen(nombre_base):
 
 st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
-st.write("Motor de Inteligencia Artificial (Auto-Adaptable) activo.")
+st.write("Motor de Inteligencia Artificial (Versión 3.6 Flash) activo.")
 st.markdown("---")
 
 col1, col2 = st.columns(2)
@@ -37,7 +37,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Buscando el motor gratuito más reciente..."):
+        with st.spinner("Conectando al motor Gemini 3.6 Flash..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
@@ -46,27 +46,8 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                     
                 genai.configure(api_key=api_key)
                 
-                # BUSCADOR INTELIGENTE: Lee tus modelos y agarra el más moderno automáticamente
-                modelo_elegido = None
-                modelos_disponibles = []
-                
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        modelos_disponibles.append(m.name)
-                        # Buscamos la versión "flash" más nueva disponible en tu cuenta
-                        if 'flash' in m.name.lower():
-                            modelo_elegido = m.name
-                            break 
-                
-                # Respaldo de seguridad
-                if not modelo_elegido and modelos_disponibles:
-                    modelo_elegido = modelos_disponibles[0]
-                    
-                if not modelo_elegido:
-                    st.error("Tu llave no tiene modelos habilitados.")
-                    st.stop()
-                    
-                modelo_ia = genai.GenerativeModel(modelo_elegido)
+                # LA SOLUCIÓN DEFINITIVA: Usar exactamente la versión que Google pide en el error.
+                modelo_ia = genai.GenerativeModel('gemini-3.6-flash')
             except Exception as e:
                 st.error(f"❌ Error al configurar la IA: {e}")
                 st.stop()
@@ -111,7 +92,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
                 desviacion = abs(vol_facturado - vol_descargado)
                 
-                st.success(f"✅ Análisis Completado (Usando el motor actual: {modelo_elegido}): {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
+                st.success(f"✅ Análisis Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
                 st.error(f"❌ Error procesando el documento. Detalle: {e}")
