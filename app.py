@@ -4,18 +4,15 @@ import PyPDF2
 from PIL import Image
 import json
 import re
-import google.generativeai as genai
+import base64
+import requests
+import io
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
-
-try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-except Exception as e:
-    st.error(f"⚠️ Error al conectar con la llave secreta: {e}")
 
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
@@ -27,7 +24,7 @@ def buscar_imagen(nombre_base):
 
 st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
-st.write("Motor de Inteligencia Artificial activo para auditoría de documentos.")
+st.write("Motor de Inteligencia Artificial (Conexión Directa) activo.")
 st.markdown("---")
 
 col1, col2 = st.columns(2)
@@ -42,14 +39,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Conectando con el servidor de Google y analizando documentos..."):
-            try:
-                # Usamos el motor Flash que tiene una cuota gratuita alta (15 por minuto)
-                modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
-            except Exception as e:
-                st.error(f"❌ Error configurando el motor IA. Detalle: {e}")
-                st.stop()
-
+        with st.spinner("Conectando de forma directa con los servidores de Google..."):
             texto_pdf = ""
             try:
                 reader = PyPDF2.PdfReader(factura_up)
@@ -58,7 +48,14 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             except Exception as e:
                 st.warning(f"Aviso: El PDF tiene un formato inusual ({e}).")
 
+            # Preparar la fotografía térmica para enviarla codificada por internet
             img_tira = Image.open(tira_up)
+            if img_tira.mode != 'RGB':
+                img_tira = img_tira.convert('RGB')
+            
+            img_byte_arr = io.BytesIO()
+            img_tira.save(img_byte_arr, format='JPEG')
+            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
             
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
@@ -75,15 +72,38 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             }}
             """
             
-            try:
-                respuesta = modelo_ia.generate_content([prompt, img_tira])
+            api_key = st.secrets.get("GEMINI_API_KEY")
+            if not api_key:
+                st.error("⚠️ No se encontró la llave GEMINI_API_KEY en los Misterios de Streamlit.")
+                st.stop()
                 
-                match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
+            # CONEXIÓN DIRECTA (Evita los errores 404 de la librería defectuosa)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}
+                    ]
+                }],
+                "generationConfig": {"temperature": 0.1}
+            }
+            
+            try:
+                response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
+                datos_respuesta = response.json()
+                
+                if response.status_code != 200:
+                    raise ValueError(f"Google rechazó la conexión directa: {datos_respuesta.get('error', {}).get('message', response.text)}")
+                    
+                texto_ia = datos_respuesta['candidates'][0]['content']['parts'][0]['text']
+                
+                # Extraer solo la información numérica de la respuesta
+                match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
                 if match:
-                    texto_json = match.group(0)
-                    datos_ia = json.loads(texto_json)
+                    datos_ia = json.loads(match.group(0))
                 else:
-                    raise ValueError(f"La IA respondió en un formato incorrecto: {respuesta.text}")
+                    raise ValueError("La IA respondió en un formato incorrecto.")
                 
                 factura_num = datos_ia.get('factura', 'SD')
                 uuid = datos_ia.get('uuid', 'SD')
@@ -94,10 +114,10 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 st.success(f"✅ Análisis IA Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
-                st.error(f"❌ Error al procesar los documentos con la IA. Detalle: {e}")
+                st.error(f"❌ Error en la conexión directa. Detalle técnico: {e}")
                 st.stop()
 
-            # --- GENERACIÓN DEL PDF ---
+            # --- GENERACIÓN DEL PDF CORPORATIVO ---
             ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_{factura_num}.pdf")
             doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
             elementos = []
@@ -167,4 +187,4 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             doc.build(elementos)
 
             with open(ruta_pdf, "rb") as pdf_file:
-                st.download_button(label="⬇️ Descargar Bitácora PDF (Auditada por IA)", data=pdf_file, file_name=f"Bitacora_Factura_{factura_num}.pdf", mime="application/pdf", type="primary")
+                st.download_button(label="⬇️ Descargar Bitácora PDF (Auditada)", data=pdf_file, file_name=f"Bitacora_Factura_{factura_num}.pdf", mime="application/pdf", type="primary")
