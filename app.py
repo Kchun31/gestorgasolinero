@@ -12,6 +12,11 @@ from reportlab.lib import colors
 
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
 
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+except Exception as e:
+    st.error(f"⚠️ Error al conectar con la llave secreta: {e}")
+
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
 
@@ -39,19 +44,10 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
     else:
         with st.spinner("Conectando con el servidor de Google y analizando documentos..."):
             try:
-                genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                
-                # MAGIA: Preguntarle a Google exactamente qué modelos tiene autorizados tu llave
-                modelo_elegido = 'gemini-1.5-flash' 
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        if '1.5' in m.name or 'pro' in m.name:
-                            modelo_elegido = m.name
-                            break
-                            
-                modelo_ia = genai.GenerativeModel(modelo_elegido)
+                # ¡AQUÍ ESTÁ LA SOLUCIÓN! Usamos exactamente el motor nuevo que Google pidió.
+                modelo_ia = genai.GenerativeModel('gemini-3.1-pro-preview')
             except Exception as e:
-                st.error(f"❌ Error de conexión con tu llave. Verifica que esté bien copiada en 'Misterios'. Detalle: {e}")
+                st.error(f"❌ Error configurando el motor IA. Detalle: {e}")
                 st.stop()
 
             texto_pdf = ""
@@ -95,7 +91,7 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
                 desviacion = abs(vol_facturado - vol_descargado)
                 
-                st.success(f"✅ Análisis IA Completado (Usando {modelo_elegido}): {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
+                st.success(f"✅ Análisis IA Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
                 st.error(f"❌ Error al procesar los documentos con la IA. Detalle: {e}")
