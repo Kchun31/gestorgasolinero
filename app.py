@@ -15,13 +15,15 @@ st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centere
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
 
+# --- SISTEMA DE MEMORIA DE FOLIO BLINDADO ---
 ARCHIVO_FOLIO = "folio_historico.txt"
 
 def obtener_folio():
     if os.path.exists(ARCHIVO_FOLIO):
         with open(ARCHIVO_FOLIO, "r") as f:
             try:
-                return int(f.read().strip())
+                val = int(f.read().strip())
+                return val if val > 0 else 1
             except:
                 return 1
     return 1
@@ -35,6 +37,7 @@ def buscar_imagen(nombre_base):
         if os.path.exists(f"{nombre_base}.{ext}"): return f"{nombre_base}.{ext}"
     return None
 
+# Asegurar que la sesión tome el valor real del archivo histórico
 if 'folio_actual' not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
 
@@ -48,6 +51,7 @@ with col1:
 with col2:
     tira_up = st.file_uploader("🧾 2. Tira Veeder-Root (Foto)", type=['jpg', 'jpeg', 'png'])
 
+# Usamos st.session_state.folio_actual para que no se resetee
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
 
 st.markdown("---")
@@ -108,17 +112,20 @@ if st.button("🚀 Procesar Recepción", type="primary", use_container_width=Tru
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
                 desviacion = abs(vol_facturado - vol_descargado)
                 
-                siguiente_folio = folio_input + 1
+                # --- ACTUALIZACIÓN Y RESERVA DEL FOLIO ---
+                siguiente_folio = int(folio_input) + 1
                 guardar_folio(siguiente_folio)
                 st.session_state.folio_actual = siguiente_folio
+                
                 st.success(f"✅ Recepción validada con éxito: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
+                st.info(f"⏭️ Folio {folio_input} procesado. El sistema ha reservado automáticamente el folio <b>{siguiente_folio}</b> para tu próxima descarga.", icon="📌")
                 
             except Exception as e:
                 st.error(f"❌ Error procesando el documento. Detalle: {e}")
                 st.stop()
 
             # --- GENERACIÓN DEL PDF OFICIAL ---
-            folio_str = str(folio_input).zfill(4) 
+            folio_str = str(int(folio_input)).zfill(4) 
             nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_num}.pdf"
             ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
             
