@@ -10,17 +10,11 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- LIBRERÍAS DE GOOGLE DRIVE ---
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
 
 carpeta_destino = "temp_destino"
 os.makedirs(carpeta_destino, exist_ok=True)
 
-# --- SISTEMA DE MEMORIA DE FOLIO ---
 ARCHIVO_FOLIO = "folio_historico.txt"
 
 def obtener_folio():
@@ -58,16 +52,15 @@ folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, 
 
 st.markdown("---")
 
-# NOTA: AQUÍ EL BOTÓN YA TIENE EL NOMBRE NUEVO
-if st.button("🚀 Procesar y Guardar en la Nube", type="primary", use_container_width=True):
+if st.button("🚀 Procesar Recepción", type="primary", use_container_width=True):
     if not factura_up or not tira_up:
         st.error("⚠️ Sube ambos documentos para continuar.")
     else:
-        with st.spinner("Leyendo documentos y conectando a Google Drive..."):
+        with st.spinner("Procesando documentos con Inteligencia Artificial..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
-                    st.error("⚠️ No se encontró la llave secreta GEMINI_API_KEY.")
+                    st.error("⚠️ No se encontró la llave secreta.")
                     st.stop()
                     
                 genai.configure(api_key=api_key)
@@ -81,8 +74,8 @@ if st.button("🚀 Procesar y Guardar en la Nube", type="primary", use_container
                 reader = PyPDF2.PdfReader(factura_up)
                 for page in reader.pages:
                     texto_pdf += page.extract_text() + " "
-            except Exception as e:
-                st.warning("Aviso: El PDF tiene un formato inusual.")
+            except Exception:
+                pass
 
             img_tira = Image.open(tira_up)
             
@@ -92,7 +85,7 @@ if st.button("🚀 Procesar y Guardar en la Nube", type="primary", use_container
             1. Texto extraído de la factura: {texto_pdf}
             2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT').
             
-            Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin texto adicional:
+            Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
             {{
                 "uuid": "folio fiscal de 36 caracteres",
                 "factura": "numero de factura",
@@ -118,6 +111,7 @@ if st.button("🚀 Procesar y Guardar en la Nube", type="primary", use_container
                 siguiente_folio = folio_input + 1
                 guardar_folio(siguiente_folio)
                 st.session_state.folio_actual = siguiente_folio
+                st.success(f"✅ Recepción validada con éxito: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
                 
             except Exception as e:
                 st.error(f"❌ Error procesando el documento. Detalle: {e}")
@@ -195,29 +189,6 @@ if st.button("🚀 Procesar y Guardar en la Nube", type="primary", use_container
             elementos.append(t_notas)
 
             doc.build(elementos)
-            
-            # --- SUBIDA AUTOMÁTICA A GOOGLE DRIVE ---
-            try:
-                credenciales_str = st.secrets.get("CREDENCIALES_ROBOT")
-                id_carpeta = st.secrets.get("ID_CARPETA")
-                
-                if credenciales_str and id_carpeta:
-                    credenciales_dict = json.loads(credenciales_str)
-                    credentials = service_account.Credentials.from_service_account_info(
-                        credenciales_dict, scopes=['https://www.googleapis.com/auth/drive.file']
-                    )
-                    drive_service = build('drive', 'v3', credentials=credentials)
-                    
-                    file_metadata = {'name': nombre_archivo_pdf, 'parents': [id_carpeta]}
-                    media = MediaFileUpload(ruta_pdf, mimetype='application/pdf', resumable=True)
-                    
-                    drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-                    st.success(f"☁️ ¡Bitácora validada y respaldada automáticamente en Google Drive!")
-                else:
-                    st.warning("⚠️ La bitácora se creó, pero falta configurar las credenciales de Drive en los Misterios para guardarla en la nube.")
-            except Exception as e:
-                st.warning(f"⚠️ La bitácora se creó correctamente, pero hubo un error al enviarla a Drive: {e}")
 
-            # Botón de descarga manual
             with open(ruta_pdf, "rb") as pdf_file:
-                st.download_button(label="⬇️ Descargar Copia Manual (PDF)", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf", type="secondary")
+                st.download_button(label="⬇️ Descargar Bitácora PDF", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf", type="primary")
