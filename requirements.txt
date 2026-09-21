@@ -3,3 +3,5 @@ reportlab
 PyPDF2
 Pillow
 google-generativeai>=0.7.0
+google-api-python-client
+google-auth
