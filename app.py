@@ -14,7 +14,8 @@ st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centere
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
+    # Motor actualizado a la versión Pro
+    modelo_ia = genai.GenerativeModel('gemini-1.5-pro-latest')
 except Exception as e:
     st.error(f"⚠️ Error al conectar con la llave secreta: {e}")
 
@@ -72,7 +73,6 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
             try:
                 respuesta = modelo_ia.generate_content([prompt, img_tira])
                 
-                # Trampa de extracción: Ignora cualquier texto extra que la IA agregue por error
                 match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
                 
                 if match:
@@ -90,11 +90,9 @@ if st.button("🚀 Procesar con Inteligencia Artificial", type="primary", use_co
                 st.success(f"✅ Análisis IA Completado: {vol_facturado:,.2f} L Facturados vs {vol_descargado:,.2f} L Descargados.")
             
             except Exception as e:
-                # Si falla, ahora mostrará exactamente por qué falló
                 st.error(f"❌ Error interno de lectura. Detalle para soporte: {e}")
                 st.stop()
 
-            # --- GENERACIÓN DEL PDF ---
             ruta_pdf = os.path.join(carpeta_destino, f"Bitacora_{factura_num}.pdf")
             doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
             elementos = []
