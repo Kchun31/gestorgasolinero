@@ -51,12 +51,10 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    # Botón clásico ideal para seleccionar el PDF en el celular
     factura_up = st.file_uploader("📄 1. Sube tu Factura (PDF)", type=['pdf'])
     
 with col2:
     st.markdown("🧾 **2. Tira Veeder-Root (Foto)**")
-    # Botón de pegar por si estás en la PC de la oficina
     paste_result = paste_image_button(
         label="📋 Pegar imagen (Si estás en PC)",
         background_color="#FF4B4B",
@@ -68,7 +66,6 @@ with col2:
         img_tira = paste_result.image_data
         st.success("✅ Imagen pegada correctamente.")
     else:
-        # Botón clásico ideal para tomar la foto directo con la cámara del celular
         tira_up = st.file_uploader("O toma/sube la foto:", type=['jpg', 'jpeg', 'png'])
         if tira_up:
             img_tira = Image.open(tira_up)
@@ -81,7 +78,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
     if not factura_up or img_tira is None:
         st.error("⚠️ Sube el PDF y toma/sube la imagen de la tira para continuar.")
     else:
-        with st.spinner("Creando bitácora y enviando directo a la nube..."):
+        with st.spinner("Extrayendo horas y creando bitácora..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
@@ -102,18 +99,21 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception:
                 pass
             
+            # --- SE ACTUALIZÓ EL PROMPT PARA PEDIR LAS HORAS ---
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
             Analiza estos dos documentos:
             1. Texto extraído de la factura: {texto_pdf}
-            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT').
+            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT' y los horarios del reporte).
             
             Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
             {{
                 "uuid": "folio fiscal de 36 caracteres",
                 "factura": "numero de factura",
                 "litros_facturados": numero decimal (cantidad de Magna),
-                "litros_descargados": numero decimal (aumento neto del ticket)
+                "litros_descargados": numero decimal (aumento neto del ticket),
+                "hora_inicio": "HH:MM",
+                "hora_termino": "HH:MM"
             }}
             """
             
@@ -129,6 +129,8 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 uuid = datos_ia.get('uuid', 'SD')
                 vol_facturado = float(datos_ia.get('litros_facturados', 0))
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
+                hora_inicio = datos_ia.get('hora_inicio', 'SD')
+                hora_termino = datos_ia.get('hora_termino', 'SD')
                 desviacion = abs(vol_facturado - vol_descargado)
                 
                 siguiente_folio = int(folio_input) + 1
@@ -166,11 +168,13 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_titulos)
             elementos.append(Spacer(1, 4))
 
+            # --- SE AGREGÓ UN RENGLÓN NUEVO PARA LOS HORARIOS ---
             t_info = Table([
                 ["FACTURA:", Paragraph(f"{factura_num}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
                 ["PERMISO CRE:", "PL/3910/EXP/ES/2015", "FOLIO FISCAL:", Paragraph(f"{uuid}", estilo_celda)],
                 ["PRODUCTO:", f"REGULAR (MAGNA) ({vol_facturado:,.2f} L)", "PROVEEDOR:", Paragraph("UNEGAS DISTRIBUCION (UDA171106KV9)", estilo_celda)],
-                ["AUTOTANQUE:", Paragraph("Emb: 779274 | Tq: 23UY9X | Op: Javier Arturo García", estilo_celda), "DESTINO:", Paragraph("Combustibles Buenos Aires", estilo_celda)]
+                ["AUTOTANQUE:", Paragraph("Emb: 779274 | Tq: 23UY9X | Op: Javier Arturo García", estilo_celda), "DESTINO:", Paragraph("Combustibles Buenos Aires", estilo_celda)],
+                ["HORA INICIO:", Paragraph(f"<b>{hora_inicio}</b>", estilo_celda), "HORA TÉRMINO:", Paragraph(f"<b>{hora_termino}</b>", estilo_celda)]
             ], colWidths=[90, 190, 90, 190])
             t_info.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f7f7f7')), ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f7f7f7')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
             elementos.append(t_info)
@@ -235,6 +239,5 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception as e:
                 st.warning(f"⚠️ Error enviando a Drive: {e}")
 
-            # Dejamos la opción de descarga manual por si acaso
             with open(ruta_pdf, "rb") as pdf_file:
                 st.download_button(label="⬇️ Descargar Copia a tu Celular/PC", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf")
