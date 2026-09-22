@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import PyPDF2
-from PIL import Image
+from PIL import Image, ImageOps
 import json
 import re
 import base64
@@ -63,12 +63,14 @@ with col2:
     
     img_tira = None
     if paste_result.image_data is not None:
-        img_tira = paste_result.image_data
+        # Se endereza la imagen si viene del portapapeles (por precaución)
+        img_tira = ImageOps.exif_transpose(paste_result.image_data)
         st.success("✅ Imagen pegada correctamente.")
     else:
         tira_up = st.file_uploader("O toma/sube la foto:", type=['jpg', 'jpeg', 'png'])
         if tira_up:
-            img_tira = Image.open(tira_up)
+            # Aquí está la magia: esto endereza la foto automáticamente
+            img_tira = ImageOps.exif_transpose(Image.open(tira_up))
 
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
 
@@ -99,7 +101,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception:
                 pass
             
-            # --- SE ACTUALIZÓ EL PROMPT PARA PEDIR LAS HORAS ---
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
             Analiza estos dos documentos:
@@ -168,7 +169,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_titulos)
             elementos.append(Spacer(1, 4))
 
-            # --- SE AGREGÓ UN RENGLÓN NUEVO PARA LOS HORARIOS ---
             t_info = Table([
                 ["FACTURA:", Paragraph(f"{factura_num}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
                 ["PERMISO CRE:", "PL/3910/EXP/ES/2015", "FOLIO FISCAL:", Paragraph(f"{uuid}", estilo_celda)],
