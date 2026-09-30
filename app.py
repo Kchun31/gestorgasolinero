@@ -63,13 +63,13 @@ with col2:
     
     img_tira = None
     if paste_result.image_data is not None:
-        # Se endereza la imagen si viene del portapapeles (por precaución)
+        # Se endereza la imagen si viene del portapapeles
         img_tira = ImageOps.exif_transpose(paste_result.image_data)
         st.success("✅ Imagen pegada correctamente.")
     else:
         tira_up = st.file_uploader("O toma/sube la foto:", type=['jpg', 'jpeg', 'png'])
         if tira_up:
-            # Aquí está la magia: esto endereza la foto automáticamente
+            # Endereza la foto tomada con el celular automáticamente
             img_tira = ImageOps.exif_transpose(Image.open(tira_up))
 
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
@@ -80,7 +80,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
     if not factura_up or img_tira is None:
         st.error("⚠️ Sube el PDF y toma/sube la imagen de la tira para continuar.")
     else:
-        with st.spinner("Extrayendo horas y creando bitácora..."):
+        with st.spinner("Extrayendo fecha, horas y creando bitácora..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
@@ -101,11 +101,12 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception:
                 pass
             
+            # --- PROMPT ACTUALIZADO PARA INCLUIR LA FECHA DE LA TIRA ---
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
             Analiza estos dos documentos:
             1. Texto extraído de la factura: {texto_pdf}
-            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT' y los horarios del reporte).
+            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT', la fecha del reporte y los horarios).
             
             Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
             {{
@@ -113,6 +114,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 "factura": "numero de factura",
                 "litros_facturados": numero decimal (cantidad de Magna),
                 "litros_descargados": numero decimal (aumento neto del ticket),
+                "fecha": "DD/MM/AAAA",
                 "hora_inicio": "HH:MM",
                 "hora_termino": "HH:MM"
             }}
@@ -130,6 +132,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 uuid = datos_ia.get('uuid', 'SD')
                 vol_facturado = float(datos_ia.get('litros_facturados', 0))
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
+                fecha_tira = datos_ia.get('fecha', 'SD')
                 hora_inicio = datos_ia.get('hora_inicio', 'SD')
                 hora_termino = datos_ia.get('hora_termino', 'SD')
                 desviacion = abs(vol_facturado - vol_descargado)
@@ -169,12 +172,13 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_titulos)
             elementos.append(Spacer(1, 4))
 
+            # --- SE INTEGRA LA FECHA JUNTO CON LOS HORARIOS EN LA TABLA ---
             t_info = Table([
                 ["FACTURA:", Paragraph(f"{factura_num}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
                 ["PERMISO CRE:", "PL/3910/EXP/ES/2015", "FOLIO FISCAL:", Paragraph(f"{uuid}", estilo_celda)],
                 ["PRODUCTO:", f"REGULAR (MAGNA) ({vol_facturado:,.2f} L)", "PROVEEDOR:", Paragraph("UNEGAS DISTRIBUCION (UDA171106KV9)", estilo_celda)],
                 ["AUTOTANQUE:", Paragraph("Emb: 779274 | Tq: 23UY9X | Op: Javier Arturo García", estilo_celda), "DESTINO:", Paragraph("Combustibles Buenos Aires", estilo_celda)],
-                ["HORA INICIO:", Paragraph(f"<b>{hora_inicio}</b>", estilo_celda), "HORA TÉRMINO:", Paragraph(f"<b>{hora_termino}</b>", estilo_celda)]
+                ["FECHA DESCARGA:", Paragraph(f"<b>{fecha_tira}</b>", estilo_celda), "HORARIO (INICIO - FIN):", Paragraph(f"<b>{hora_inicio} a {hora_termino}</b>", estilo_celda)]
             ], colWidths=[90, 190, 90, 190])
             t_info.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f7f7f7')), ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f7f7f7')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
             elementos.append(t_info)
