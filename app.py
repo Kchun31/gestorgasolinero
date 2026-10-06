@@ -63,13 +63,11 @@ with col2:
     
     img_tira = None
     if paste_result.image_data is not None:
-        # Se endereza la imagen si viene del portapapeles
         img_tira = ImageOps.exif_transpose(paste_result.image_data)
         st.success("✅ Imagen pegada correctamente.")
     else:
         tira_up = st.file_uploader("O toma/sube la foto:", type=['jpg', 'jpeg', 'png'])
         if tira_up:
-            # Endereza la foto tomada con el celular automáticamente
             img_tira = ImageOps.exif_transpose(Image.open(tira_up))
 
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
@@ -101,14 +99,13 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception:
                 pass
             
-            # --- PROMPT ACTUALIZADO PARA INCLUIR LA FECHA DE LA TIRA ---
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
             Analiza estos dos documentos:
             1. Texto extraído de la factura: {texto_pdf}
             2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT', la fecha del reporte y los horarios).
             
-            Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
+            Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saltos de línea adicionales:
             {{
                 "uuid": "folio fiscal de 36 caracteres",
                 "factura": "numero de factura",
@@ -124,17 +121,18 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 respuesta = modelo_ia.generate_content([prompt, img_tira])
                 match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
                 if match:
-                    datos_ia = json.loads(match.group(0))
+                    # AQUÍ ESTÁ EL PARCHE: strict=False permite tolerar caracteres de control invisibles
+                    datos_ia = json.loads(match.group(0), strict=False)
                 else:
                     raise ValueError("Formato incorrecto.")
                 
-                factura_num = datos_ia.get('factura', 'SD')
-                uuid = datos_ia.get('uuid', 'SD')
+                factura_num = str(datos_ia.get('factura', 'SD')).replace('\n', '')
+                uuid = str(datos_ia.get('uuid', 'SD')).replace('\n', '')
                 vol_facturado = float(datos_ia.get('litros_facturados', 0))
                 vol_descargado = float(datos_ia.get('litros_descargados', 0))
-                fecha_tira = datos_ia.get('fecha', 'SD')
-                hora_inicio = datos_ia.get('hora_inicio', 'SD')
-                hora_termino = datos_ia.get('hora_termino', 'SD')
+                fecha_tira = str(datos_ia.get('fecha', 'SD')).replace('\n', '')
+                hora_inicio = str(datos_ia.get('hora_inicio', 'SD')).replace('\n', '')
+                hora_termino = str(datos_ia.get('hora_termino', 'SD')).replace('\n', '')
                 desviacion = abs(vol_facturado - vol_descargado)
                 
                 siguiente_folio = int(folio_input) + 1
@@ -172,7 +170,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_titulos)
             elementos.append(Spacer(1, 4))
 
-            # --- SE INTEGRA LA FECHA JUNTO CON LOS HORARIOS EN LA TABLA ---
             t_info = Table([
                 ["FACTURA:", Paragraph(f"{factura_num}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
                 ["PERMISO CRE:", "PL/3910/EXP/ES/2015", "FOLIO FISCAL:", Paragraph(f"{uuid}", estilo_celda)],
