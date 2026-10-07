@@ -99,18 +99,19 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             except Exception:
                 pass
             
+            # --- PROMPT CORREGIDO A AUMENTO BRUTO ---
             prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
             Analiza estos dos documentos:
             1. Texto extraído de la factura: {texto_pdf}
-            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO NETO CT', la fecha del reporte y los horarios).
+            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO BRUTO CT', la fecha del reporte y los horarios).
             
             Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saltos de línea adicionales:
             {{
                 "uuid": "folio fiscal de 36 caracteres",
                 "factura": "numero de factura",
                 "litros_facturados": numero decimal (cantidad de Magna),
-                "litros_descargados": numero decimal (aumento neto del ticket),
+                "litros_descargados": numero decimal (aumento bruto del ticket),
                 "fecha": "DD/MM/AAAA",
                 "hora_inicio": "HH:MM",
                 "hora_termino": "HH:MM"
@@ -121,7 +122,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 respuesta = modelo_ia.generate_content([prompt, img_tira])
                 match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
                 if match:
-                    # AQUÍ ESTÁ EL PARCHE: strict=False permite tolerar caracteres de control invisibles
                     datos_ia = json.loads(match.group(0), strict=False)
                 else:
                     raise ValueError("Formato incorrecto.")
@@ -129,10 +129,12 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 factura_num = str(datos_ia.get('factura', 'SD')).replace('\n', '')
                 uuid = str(datos_ia.get('uuid', 'SD')).replace('\n', '')
                 vol_facturado = float(datos_ia.get('litros_facturados', 0))
-                vol_descargado = float(datos_ia.get('litros_descargados', 0))
+                vol_descargado = float(datos_ia.get('litros_descargados', 0)) # Ahora será el volumen bruto
                 fecha_tira = str(datos_ia.get('fecha', 'SD')).replace('\n', '')
                 hora_inicio = str(datos_ia.get('hora_inicio', 'SD')).replace('\n', '')
                 hora_termino = str(datos_ia.get('hora_termino', 'SD')).replace('\n', '')
+                
+                # La desviación ahora se calcula restando el Facturado contra el Aumento Bruto
                 desviacion = abs(vol_facturado - vol_descargado)
                 
                 siguiente_folio = int(folio_input) + 1
@@ -181,15 +183,17 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_info)
             elementos.append(Spacer(1, 4))
 
+            # --- TABLA ACTUALIZADA A AUMENTO BRUTO ---
             t_control = Table([
                 ["PARÁMETRO / CONTROL", "REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)", "CUMPLE SASISOPA", "ESTATUS / VALORES"],
-                [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada.<br/>• Aumento Neto CT: <b>{vol_descargado:,.2f} L</b>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado: {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
+                [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada.<br/>• Aumento Bruto CT: <b>{vol_descargado:,.2f} L</b>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado (Bruto): {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
             ], colWidths=[110, 250, 90, 110])
             t_control.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#a81c1c')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('ALIGN', (2, 1), (2, 1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333'))]))
             elementos.append(t_control)
             elementos.append(Spacer(1, 4))
 
-            t_obs = Table([["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Aumento Neto validado mediante registro fotográfico en Anexo 2.", estilo_celda)]], colWidths=[130, 430])
+            # --- OBSERVACIONES ACTUALIZADAS A AUMENTO BRUTO ---
+            t_obs = Table([["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Aumento Bruto validado mediante registro fotográfico en Anexo 2.", estilo_celda)]], colWidths=[130, 430])
             t_obs.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#f7f7f7')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
             elementos.append(t_obs)
             elementos.append(Spacer(1, 20))
@@ -214,7 +218,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(img_veeder_pdf)
             elementos.append(Spacer(1, 10))
 
-            t_notas = Table([["Auditoría Documental:", Paragraph(f"• Factura: {factura_num} | Litros Facturados: {vol_facturado:,.2f} L<br/>• Litros Descargados: {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]], colWidths=[130, 430])
+            t_notas = Table([["Auditoría Documental:", Paragraph(f"• Factura: {factura_num} | Litros Facturados: {vol_facturado:,.2f} L<br/>• Litros Descargados (Bruto): {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]], colWidths=[130, 430])
             t_notas.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#fdfdfd')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')]))
             elementos.append(t_notas)
 
@@ -230,7 +234,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                     res = requests.post(url_script, data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf})
                     
                     if "éxito" in res.text.lower():
-                        st.success(f"✅ Recepción validada: {vol_facturado:,.2f} L vs {vol_descargado:,.2f} L.")
+                        st.success(f"✅ Recepción validada: {vol_facturado:,.2f} L vs {vol_descargado:,.2f} L (Bruto).")
                         st.success("☁️ ¡Bitácora enviada y guardada 100% en automático en tu Drive!")
                         st.info(f"⏭️ El sistema ha reservado el folio <b>{siguiente_folio}</b> para la próxima.", icon="📌")
                     else:
