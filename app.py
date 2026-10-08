@@ -86,12 +86,12 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                     st.stop()
                     
                 genai.configure(api_key=api_key)
-                modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
+                # AQUÍ ESTÁ LA VERSIÓN ESPECÍFICA PARA EVITAR EL ERROR 404
+                modelo_ia = genai.GenerativeModel('gemini-1.5-flash-001')
             except Exception as e:
                 st.error(f"❌ Error de configuración: {e}")
                 st.stop()
 
-            # Lógica para saber si la factura es PDF o Imagen
             texto_pdf = ""
             img_factura = None
             
@@ -103,17 +103,20 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 except Exception:
                     pass
             else:
-                # Es una foto
                 img_factura = ImageOps.exif_transpose(Image.open(factura_up))
             
             prompt = """
-            Eres un auditor estricto de estaciones de servicio.
+            Eres un auditor estricto de estaciones de servicio experto en leer documentos físicos en mal estado.
             Analiza los documentos proporcionados:
             1. Factura (puede venir como texto extraído o como imagen).
             2. Imagen del ticket Veeder-Root.
             
-            Busca en el Veeder-Root el 'AUMENTO BRUTO CT', la fecha del reporte y los horarios.
-            Busca en la Factura el número de factura, el folio fiscal (UUID de 36 caracteres) y los litros facturados de Magna (Regular).
+            INSTRUCCIONES PARA FOTOS POCO LEGIBLES:
+            - El ticket puede estar arrugado, manchado, con poca luz o borroso.
+            - Usa tu capacidad de deducción para leer números difíciles (por ejemplo, distinguir entre un '8' y un '3', o un '5' y una 'S').
+            - Busca la etiqueta 'AUMENTO BRUTO CT' (o variaciones causadas por mala impresión como 'AUMENT0', 'BRUT0') para extraer los litros descargados.
+            - Haz tu mejor esfuerzo para reconstruir los datos basándote en el formato típico de tickets de gasolineras.
+            - En la Factura busca el número de factura, el folio fiscal (UUID de 36 caracteres) y los litros facturados de Magna (Regular).
             
             Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saltos de línea adicionales:
             {
@@ -130,7 +133,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             if texto_pdf:
                 prompt += f"\n\nTexto extraído de la factura PDF:\n{texto_pdf}"
             
-            # Preparar los elementos para Gemini (Prompt + imágenes disponibles)
             elementos_ia = [prompt, img_tira]
             if img_factura:
                 elementos_ia.append(img_factura)
@@ -141,7 +143,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 if match:
                     datos_ia = json.loads(match.group(0), strict=False)
                 else:
-                    raise ValueError("Formato incorrecto en la respuesta de la IA.")
+                    raise ValueError("La IA no pudo estructurar los datos. Intenta tomar la foto con un poco más de luz.")
                 
                 factura_num = str(datos_ia.get('factura', 'SD')).replace('\n', '')
                 uuid = str(datos_ia.get('uuid', 'SD')).replace('\n', '')
@@ -158,7 +160,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 st.session_state.folio_actual = siguiente_folio
                 
             except Exception as e:
-                st.error(f"❌ Error procesando el documento. Asegúrate de que las fotos sean legibles. Detalle: {e}")
+                st.error(f"❌ Error procesando el documento. Detalle: {e}")
                 st.stop()
 
             # --- GENERACIÓN DEL PDF OFICIAL ---
