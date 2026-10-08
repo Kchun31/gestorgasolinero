@@ -11,8 +11,6 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-
-# --- LIBRERÍA PARA PEGAR DESDE PORTAPAPELES ---
 from streamlit_paste_button import paste_image_button
 
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
@@ -51,7 +49,8 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    factura_up = st.file_uploader("📄 1. Sube tu Factura (PDF)", type=['pdf'])
+    st.markdown("📄 **1. Factura (Sube PDF o Toma Foto)**")
+    factura_up = st.file_uploader("Si estás en celular, te dejará usar la cámara:", type=['pdf', 'jpg', 'jpeg', 'png'], key="factura")
     
 with col2:
     st.markdown("🧾 **2. Tira Veeder-Root (Foto)**")
@@ -66,19 +65,20 @@ with col2:
         img_tira = ImageOps.exif_transpose(paste_result.image_data)
         st.success("✅ Imagen pegada correctamente.")
     else:
-        tira_up = st.file_uploader("O toma/sube la foto:", type=['jpg', 'jpeg', 'png'])
+        tira_up = st.file_uploader("Si estás en celular, usa la cámara aquí:", type=['jpg', 'jpeg', 'png'], key="tira")
         if tira_up:
             img_tira = ImageOps.exif_transpose(Image.open(tira_up))
 
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
+st.caption("Nota: Si la app se reinicia en la nube, el folio puede volver a 1. Ajusta manualmente el consecutivo si es necesario.")
 
 st.markdown("---")
 
 if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
     if not factura_up or img_tira is None:
-        st.error("⚠️ Sube el PDF y toma/sube la imagen de la tira para continuar.")
+        st.error("⚠️ Falta adjuntar la factura (PDF o foto) o la imagen de la tira Veeder-Root.")
     else:
-        with st.spinner("Extrayendo fecha, horas y creando bitácora..."):
+        with st.spinner("Leyendo documentos con IA y creando bitácora..."):
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
@@ -86,28 +86,37 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                     st.stop()
                     
                 genai.configure(api_key=api_key)
-                modelo_ia = genai.GenerativeModel('gemini-3.6-flash')
+                modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 st.error(f"❌ Error de configuración: {e}")
                 st.stop()
 
+            # Lógica para saber si la factura es PDF o Imagen
             texto_pdf = ""
-            try:
-                reader = PyPDF2.PdfReader(factura_up)
-                for page in reader.pages:
-                    texto_pdf += page.extract_text() + " "
-            except Exception:
-                pass
+            img_factura = None
             
-            # --- PROMPT CORREGIDO A AUMENTO BRUTO ---
-            prompt = f"""
+            if factura_up.type == "application/pdf":
+                try:
+                    reader = PyPDF2.PdfReader(factura_up)
+                    for page in reader.pages:
+                        texto_pdf += page.extract_text() + " "
+                except Exception:
+                    pass
+            else:
+                # Es una foto
+                img_factura = ImageOps.exif_transpose(Image.open(factura_up))
+            
+            prompt = """
             Eres un auditor estricto de estaciones de servicio.
-            Analiza estos dos documentos:
-            1. Texto extraído de la factura: {texto_pdf}
-            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO BRUTO CT', la fecha del reporte y los horarios).
+            Analiza los documentos proporcionados:
+            1. Factura (puede venir como texto extraído o como imagen).
+            2. Imagen del ticket Veeder-Root.
+            
+            Busca en el Veeder-Root el 'AUMENTO BRUTO CT', la fecha del reporte y los horarios.
+            Busca en la Factura el número de factura, el folio fiscal (UUID de 36 caracteres) y los litros facturados de Magna (Regular).
             
             Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saltos de línea adicionales:
-            {{
+            {
                 "uuid": "folio fiscal de 36 caracteres",
                 "factura": "numero de factura",
                 "litros_facturados": numero decimal (cantidad de Magna),
@@ -115,26 +124,33 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 "fecha": "DD/MM/AAAA",
                 "hora_inicio": "HH:MM",
                 "hora_termino": "HH:MM"
-            }}
+            }
             """
             
+            if texto_pdf:
+                prompt += f"\n\nTexto extraído de la factura PDF:\n{texto_pdf}"
+            
+            # Preparar los elementos para Gemini (Prompt + imágenes disponibles)
+            elementos_ia = [prompt, img_tira]
+            if img_factura:
+                elementos_ia.append(img_factura)
+
             try:
-                respuesta = modelo_ia.generate_content([prompt, img_tira])
+                respuesta = modelo_ia.generate_content(elementos_ia)
                 match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
                 if match:
                     datos_ia = json.loads(match.group(0), strict=False)
                 else:
-                    raise ValueError("Formato incorrecto.")
+                    raise ValueError("Formato incorrecto en la respuesta de la IA.")
                 
                 factura_num = str(datos_ia.get('factura', 'SD')).replace('\n', '')
                 uuid = str(datos_ia.get('uuid', 'SD')).replace('\n', '')
                 vol_facturado = float(datos_ia.get('litros_facturados', 0))
-                vol_descargado = float(datos_ia.get('litros_descargados', 0)) # Ahora será el volumen bruto
+                vol_descargado = float(datos_ia.get('litros_descargados', 0)) 
                 fecha_tira = str(datos_ia.get('fecha', 'SD')).replace('\n', '')
                 hora_inicio = str(datos_ia.get('hora_inicio', 'SD')).replace('\n', '')
                 hora_termino = str(datos_ia.get('hora_termino', 'SD')).replace('\n', '')
                 
-                # La desviación ahora se calcula restando el Facturado contra el Aumento Bruto
                 desviacion = abs(vol_facturado - vol_descargado)
                 
                 siguiente_folio = int(folio_input) + 1
@@ -142,7 +158,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 st.session_state.folio_actual = siguiente_folio
                 
             except Exception as e:
-                st.error(f"❌ Error procesando el documento. Detalle: {e}")
+                st.error(f"❌ Error procesando el documento. Asegúrate de que las fotos sean legibles. Detalle: {e}")
                 st.stop()
 
             # --- GENERACIÓN DEL PDF OFICIAL ---
@@ -183,7 +199,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_info)
             elementos.append(Spacer(1, 4))
 
-            # --- TABLA ACTUALIZADA A AUMENTO BRUTO ---
             t_control = Table([
                 ["PARÁMETRO / CONTROL", "REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)", "CUMPLE SASISOPA", "ESTATUS / VALORES"],
                 [Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro), Paragraph(f"• Verificación de descarga autorizada.<br/>• Aumento Bruto CT: <b>{vol_descargado:,.2f} L</b>", estilo_celda), Paragraph("[ X ] SÍ    [   ] NO", estilo_celda_centro), Paragraph(f"Facturado: {vol_facturado:,.2f} L<br/>Descargado (Bruto): {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b> {desviacion:,.2f} L", estilo_celda)]
@@ -192,7 +207,6 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             elementos.append(t_control)
             elementos.append(Spacer(1, 4))
 
-            # --- OBSERVACIONES ACTUALIZADAS A AUMENTO BRUTO ---
             t_obs = Table([["OBSERVACIONES / ACCIONES:", Paragraph(f"Recepción amparada con Factura {factura_num}. Aumento Bruto validado mediante registro fotográfico en Anexo 2.", estilo_celda)]], colWidths=[130, 430])
             t_obs.setStyle(TableStyle([('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#f7f7f7')), ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'), ('FONTSIZE', (0, 0), (-1, -1), 6.5), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#333333')), ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
             elementos.append(t_obs)
@@ -224,7 +238,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
 
             doc.build(elementos)
 
-            # --- ENVÍO AUTÓNOMO A GOOGLE DRIVE MEDIANTE EL PUENTE ---
+            # --- ENVÍO A DRIVE ---
             try:
                 url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
                 if url_script:
@@ -235,12 +249,11 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                     
                     if "éxito" in res.text.lower():
                         st.success(f"✅ Recepción validada: {vol_facturado:,.2f} L vs {vol_descargado:,.2f} L (Bruto).")
-                        st.success("☁️ ¡Bitácora enviada y guardada 100% en automático en tu Drive!")
-                        st.info(f"⏭️ El sistema ha reservado el folio <b>{siguiente_folio}</b> para la próxima.", icon="📌")
+                        st.success("☁️ ¡Bitácora enviada a tu Drive!")
                     else:
                         st.warning(f"⚠️ Error del puente Drive: {res.text}")
                 else:
-                    st.warning("⚠️ Falta configurar URL_GOOGLE_SCRIPT en los Misterios.")
+                    st.warning("⚠️ Falta configurar URL_GOOGLE_SCRIPT.")
             except Exception as e:
                 st.warning(f"⚠️ Error enviando a Drive: {e}")
 
