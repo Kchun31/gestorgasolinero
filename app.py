@@ -6,6 +6,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import io
 from PIL import Image
+from streamlit_paste_button import paste_image_button
 
 # Configuración de página de la aplicación
 st.set_page_config(page_title="Combustibles Buenos Aires S.A. de C.V.", layout="centered")
@@ -13,7 +14,6 @@ st.set_page_config(page_title="Combustibles Buenos Aires S.A. de C.V.", layout="
 # Configurar API de Gemini con el modelo actualizado y estable
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Actualizado a gemini-2.5-flash para evitar errores de modelos obsoletos
     model = genai.GenerativeModel("gemini-2.5-flash")
 except Exception as e:
     st.error(f"Error configurando la API de Gemini en los Secrets: {e}")
@@ -25,24 +25,39 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. Factura (Sube PDF o Toma Foto)")
-    archivo_factura = st.file_uploader("Sube el archivo de la factura", type=["pdf", "png", "jpg", "jpeg"])
+    archivo_factura = st.file_uploader("Sube el archivo de la factura", type=["pdf", "png", "jpg", "jpeg"], key="factura")
 
 with col2:
     st.subheader("2. Tira Veeder-Root (Foto)")
-    archivo_veeder = st.file_uploader("Sube la foto del Veeder-Root", type=["png", "jpg", "jpeg"], key="veeder")
+    
+    # Botón para pegar imagen desde el portapapeles en PC
+    paste_result = paste_image_button(
+        label="Pegar imagen (Si estás en PC)",
+        background_color="#FF4B4B",
+        text_color="#ffffff",
+        hover_background_color="#d43b3b",
+        key="paste_veeder"
+    )
+    
+    img_veeder = None
+    if paste_result.image_data is not None:
+        st.success("Imagen pegada correctamente.")
+        img_veeder = paste_result.image_data
+    else:
+        # Alternativa de respaldo por si prefieren subir archivo o están en celular
+        archivo_veeder = st.file_uploader("O sube la foto del Veeder-Root", type=["png", "jpg", "jpeg"], key="veeder_file")
+        if archivo_veeder:
+            img_veeder = Image.open(archivo_veeder)
 
 folio = st.number_input("Número de Folio Consecutivo", min_value=1, value=20)
 
 if st.button("Procesar y Subir a Google Drive", type="primary"):
-    if not archivo_factura or not archivo_veeder:
-        st.warning("Por favor sube ambos documentos (Factura y Veeder-Root) para continuar.")
+    if not archivo_factura or img_veeder is None:
+        st.warning("Por favor proporciona ambos documentos (Factura y la Tira Veeder-Root ya sea pegada o subida) para continuar.")
     else:
         with st.status("Leyendo documentos con IA y creando bitácora...", expanded=True) as status:
             try:
                 st.write("Analizando imágenes con Gemini...")
-                
-                # Procesar imagen del Veeder-Root y factura
-                img_veeder = Image.open(archivo_veeder)
                 
                 prompt = (
                     "Analiza estos documentos de la estación de servicio y extrae los datos clave: "
