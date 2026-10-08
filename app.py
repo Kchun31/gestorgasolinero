@@ -19,8 +19,6 @@ from reportlab.platypus import (
 )
 import requests
 import streamlit as st
-
-# --- LIBRERÍA PARA PEGAR DESDE PORTAPAPELES ---
 from streamlit_paste_button import paste_image_button
 
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
@@ -64,16 +62,43 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-  factura_up = st.file_uploader(
-      "📄 1. Sube tu Factura (PDF)", type=["pdf"], key="factura_file"
+  st.markdown("📄 **1. Factura (PDF o Cámara)**")
+  metodo_factura = st.radio(
+      "Método Factura:",
+      ["📁 Subir PDF/Imagen", "📸 Usar Cámara"],
+      horizontal=True,
+      key="metodo_factura",
   )
 
-with col2:
-  st.markdown("🧾 **2. Tira Veeder-Root (Foto)**")
+  img_factura = None
+  factura_file = None
+  texto_pdf = ""
 
-  # Opción 1: Pegar desde portapapeles (Ideal para PC)
+  if metodo_factura == "📁 Subir PDF/Imagen":
+    factura_file = st.file_uploader(
+        "Sube archivo:", type=["pdf", "png", "jpg", "jpeg"], key="factura_up"
+    )
+    if factura_file:
+      if factura_file.type == "application/pdf":
+        try:
+          reader = PyPDF2.PdfReader(factura_file)
+          for page in reader.pages:
+            texto_pdf += page.extract_text() + " "
+        except Exception:
+          pass
+      else:
+        img_factura = ImageOps.exif_transpose(Image.open(factura_file))
+  else:
+    foto_factura_cam = st.camera_input(
+        "Toma foto de la factura", key="camara_factura"
+    )
+    if foto_factura_cam:
+      img_factura = ImageOps.exif_transpose(Image.open(foto_factura_cam))
+
+with col2:
+  st.markdown("🧾 **2. Tira Veeder-Root (Foto o Cámara)**")
   paste_result = paste_image_button(
-      label="📋 Pegar imagen (Si estás en PC)",
+      label="📋 Pegar imagen (PC)",
       background_color="#FF4B4B",
       hover_background_color="#FF6666",
       key="paste_btn",
@@ -84,10 +109,9 @@ with col2:
     img_tira = ImageOps.exif_transpose(paste_result.image_data)
     st.success("✅ Imagen pegada correctamente.")
   else:
-    # Selector entre Cámara directa o Subir archivo/Galería (Ideal para Celular)
     metodo_foto = st.radio(
-        "Selecciona método para la Tira:",
-        ["📸 Usar Cámara", "📁 Subir Archivo / Galería"],
+        "Método Tira:",
+        ["📸 Usar Cámara", "📁 Subir Archivo"],
         horizontal=True,
         key="metodo_captura",
     )
@@ -100,9 +124,7 @@ with col2:
         img_tira = ImageOps.exif_transpose(Image.open(foto_camara))
     else:
       tira_up = st.file_uploader(
-          "Sube la foto de la galería:",
-          type=["jpg", "jpeg", "png"],
-          key="galeria_veeder",
+          "Sube la foto:", type=["jpg", "jpeg", "png"], key="galeria_veeder"
       )
       if tira_up:
         img_tira = ImageOps.exif_transpose(Image.open(tira_up))
@@ -119,13 +141,13 @@ st.markdown("---")
 if st.button(
     "🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True
 ):
-  if not factura_up or img_tira is None:
+  if (not factura_file and img_factura is None) or img_tira is None:
     st.error(
-        "⚠️ Sube el PDF de la factura y captura/sube la imagen de la tira para"
-        " continuar."
+        "⚠️ Proporciona tanto la Factura (PDF o foto) como la Tira Veeder-Root"
+        " para continuar."
     )
   else:
-    with st.spinner("Extrayendo fecha, horas y creando bitácora..."):
+    with st.spinner("Extrayendo datos y creando bitácora..."):
       try:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
@@ -133,30 +155,22 @@ if st.button(
           st.stop()
 
         genai.configure(api_key=api_key)
-        # Modelo actualizado y estable requerido por Google
         modelo_ia = genai.GenerativeModel("gemini-3.8-flash")
       except Exception as e:
         st.error(f"❌ Error de configuración: {e}")
         st.stop()
 
-      texto_pdf = ""
-      try:
-        reader = PyPDF2.PdfReader(factura_up)
-        for page in reader.pages:
-          texto_pdf += page.extract_text() + " "
-      except Exception:
-        pass
-
       prompt = f"""
             Eres un auditor estricto de estaciones de servicio.
-            Analiza estos dos documentos:
-            1. Texto extraído de la factura: {texto_pdf}
-            2. Imagen del ticket Veeder-Root (busca el 'AUMENTO BRUTO CT', la fecha del reporte y los horarios).
+            Analiza los documentos proporcionados:
+            1. Texto de factura (si existe): {texto_pdf}
+            2. Imagen de factura / ticket (si existe)
+            3. Imagen del ticket Veeder-Root (busca el 'AUMENTO BRUTO CT', fecha y horarios).
             
             Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saltos de línea adicionales:
             {{
-                "uuid": "folio fiscal de 36 caracteres",
-                "factura": "numero de factura",
+                "uuid": "folio fiscal de 36 caracteres o SD",
+                "factura": "numero de factura o SD",
                 "litros_facturados": numero decimal (cantidad de Magna),
                 "litros_descargados": numero decimal (aumento bruto del ticket),
                 "fecha": "DD/MM/AAAA",
@@ -166,7 +180,13 @@ if st.button(
             """
 
       try:
-        respuesta = modelo_ia.generate_content([prompt, img_tira])
+        contenido_ia = [prompt]
+        if img_factura is not None:
+          contenido_ia.append(img_factura)
+        if img_tira is not None:
+          contenido_ia.append(img_tira)
+
+        respuesta = modelo_ia.generate_content(contenido_ia)
         match = re.search(r"\{.*\}", respuesta.text, re.DOTALL)
         if match:
           datos_ia = json.loads(match.group(0), strict=False)
@@ -188,10 +208,10 @@ if st.button(
         st.session_state.folio_actual = siguiente_folio
 
       except Exception as e:
-        st.error(f"❌ Error procesando el documento con IA. Detalle: {e}")
+        st.error(f"❌ Error procesando con IA: {e}")
         st.stop()
 
-      # --- GENERACIÓN DEL PDF OFICIAL ---
+      # --- GENERACIÓN DEL PDF ---
       folio_str = str(int(folio_input)).zfill(4)
       nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_num}.pdf"
       ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
@@ -468,7 +488,7 @@ if st.button(
 
       doc.build(elementos)
 
-      # --- ENVÍO AUTOMÁTICO A GOOGLE DRIVE ---
+      # --- ENVÍO A GOOGLE DRIVE ---
       try:
         url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
         if url_script:
