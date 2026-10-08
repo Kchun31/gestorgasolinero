@@ -147,7 +147,10 @@ if st.button(
         " para continuar."
     )
   else:
-    with st.spinner("Extrayendo datos y creando bitácora..."):
+    with st.spinner(
+        "Analizando con precisión quirúrgica mediante IA y creando"
+        " bitácora..."
+    ):
       try:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
@@ -160,19 +163,26 @@ if st.button(
         st.error(f"❌ Error de configuración: {e}")
         st.stop()
 
+      # PROMPT MEJORADO Y ESTRICTO PARA FOTOS Y PDF
       prompt = f"""
-            Eres un auditor estricto de estaciones de servicio.
-            Analiza los documentos proporcionados:
-            1. Texto de factura (si existe): {texto_pdf}
-            2. Imagen de factura / ticket (si existe)
-            3. Imagen del ticket Veeder-Root (busca el 'AUMENTO BRUTO CT', fecha y horarios).
+            Eres un auditor fiscal y operativo experto en estaciones de servicio en México.
+            Analiza con extrema precisión los documentos proporcionados (texto de factura, imagen de factura y tira Veeder-Root):
             
-            Devuelve ÚNICAMENTE un JSON con esta estructura exacta, sin saltos de línea adicionales:
+            1. DE LA FACTURA (Texto o Imagen):
+               - Busca y extrae el Número de Factura o Folio con exactitud (busca etiquetas como "Folio", "Factura", "Serie/Folio"). No confundir con el número de estación.
+               - Extrae la cantidad exacta de litros facturados correspondientes a Magna / Regular (busca "Magna", "Regular" o "Gasolina Menor a 92 Octanos").
+               - Extrae el UUID o Folio Fiscal de 36 caracteres.
+               
+            2. DE LA TIRA VEEDER-ROOT (Imagen):
+               - Busca el 'AUMENTO BRUTO CT' o volumen descargado del tanque 1 (Magna).
+               - Extrae la fecha del reporte (DD/MM/AAAA) y los horarios de inicio y término (HH:MM).
+
+            Devuelve ÚNICAMENTE un objeto JSON válido, sin texto adicional ni bloques markdown extra, con esta estructura exacta:
             {{
                 "uuid": "folio fiscal de 36 caracteres o SD",
                 "factura": "numero de factura o SD",
-                "litros_facturados": numero decimal (cantidad de Magna),
-                "litros_descargados": numero decimal (aumento bruto del ticket),
+                "litros_facturados": numero decimal exacto,
+                "litros_descargados": numero decimal exacto del aumento bruto,
                 "fecha": "DD/MM/AAAA",
                 "hora_inicio": "HH:MM",
                 "hora_termino": "HH:MM"
@@ -181,6 +191,10 @@ if st.button(
 
       try:
         contenido_ia = [prompt]
+        if texto_pdf:
+          contenido_ia.append(
+              f"Texto extraído del PDF de la factura: {texto_pdf}"
+          )
         if img_factura is not None:
           contenido_ia.append(img_factura)
         if img_tira is not None:
@@ -191,7 +205,9 @@ if st.button(
         if match:
           datos_ia = json.loads(match.group(0), strict=False)
         else:
-          raise ValueError("Formato incorrecto en la respuesta de la IA.")
+          raise ValueError(
+              "Formato de respuesta de IA inválido: " + respuesta.text
+          )
 
         factura_num = str(datos_ia.get("factura", "SD")).replace("\n", "")
         uuid = str(datos_ia.get("uuid", "SD")).replace("\n", "")
@@ -211,7 +227,7 @@ if st.button(
         st.error(f"❌ Error procesando con IA: {e}")
         st.stop()
 
-      # --- GENERACIÓN DEL PDF ---
+      # --- GENERACIÓN DEL PDF OFICIAL ---
       folio_str = str(int(folio_input)).zfill(4)
       nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_num}.pdf"
       ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
