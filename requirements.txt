@@ -1,8 +1,7 @@
 streamlit
-reportlab
 PyPDF2
 Pillow
+requests
 google-generativeai>=0.7.0
-google-api-python-client
-google-auth
+reportlab
 streamlit-paste-button
