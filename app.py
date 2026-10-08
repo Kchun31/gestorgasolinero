@@ -86,8 +86,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                     st.stop()
                     
                 genai.configure(api_key=api_key)
-                # AQUÍ ESTÁ LA VERSIÓN ESPECÍFICA PARA EVITAR EL ERROR 404
-                modelo_ia = genai.GenerativeModel('gemini-1.5-flash-001')
+                modelo_ia = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 st.error(f"❌ Error de configuración: {e}")
                 st.stop()
