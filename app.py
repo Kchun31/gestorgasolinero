@@ -2,7 +2,9 @@ import base64
 import json
 import os
 import re
+import time
 import google.generativeai as genai
+from google.api_core import exceptions
 from PIL import Image, ImageOps
 import PyPDF2
 from reportlab.lib import colors
@@ -28,7 +30,6 @@ os.makedirs(carpeta_destino, exist_ok=True)
 
 ARCHIVO_FOLIO = "folio_historico.txt"
 
-
 def obtener_folio():
   if os.path.exists(ARCHIVO_FOLIO):
     with open(ARCHIVO_FOLIO, "r") as f:
@@ -39,18 +40,15 @@ def obtener_folio():
         return 1
   return 1
 
-
 def guardar_folio(nuevo_folio):
   with open(ARCHIVO_FOLIO, "w") as f:
     f.write(str(nuevo_folio))
-
 
 def buscar_imagen(nombre_base):
   for ext in ["png", "jpg", "jpeg", "PNG", "JPG"]:
     if os.path.exists(f"{nombre_base}.{ext}"):
       return f"{nombre_base}.{ext}"
   return None
-
 
 if "folio_actual" not in st.session_state:
   st.session_state.folio_actual = obtener_folio()
@@ -163,7 +161,6 @@ if st.button(
         st.error(f"❌ Error de configuración: {e}")
         st.stop()
 
-      # PROMPT MEJORADO Y ESTRICTO PARA FOTOS Y PDF
       prompt = f"""
             Eres un auditor fiscal y operativo experto en estaciones de servicio en México.
             Analiza con extrema precisión los documentos proporcionados (texto de factura, imagen de factura y tira Veeder-Root):
@@ -200,7 +197,21 @@ if st.button(
         if img_tira is not None:
           contenido_ia.append(img_tira)
 
-        respuesta = modelo_ia.generate_content(contenido_ia)
+        # --- SISTEMA DE REINTENTO INTELIGENTE (ANTIBLOQUEOS) ---
+        respuesta = None
+        for intento in range(3):
+            try:
+                respuesta = modelo_ia.generate_content(contenido_ia)
+                break  # Si tiene éxito, rompe el bucle
+            except exceptions.ResourceExhausted:
+                if intento < 2:
+                    # Si falla, espera 65 segundos y vuelve a intentar
+                    time.sleep(65)
+                else:
+                    raise  # Si falla 3 veces, detiene el proceso
+
+        # --- FIN DEL SISTEMA ---
+
         match = re.search(r"\{.*\}", respuesta.text, re.DOTALL)
         if match:
           datos_ia = json.loads(match.group(0), strict=False)
