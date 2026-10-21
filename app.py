@@ -145,6 +145,8 @@ if st.button(
         " para continuar."
     )
   else:
+    mensaje_pausa = st.empty()
+    
     with st.spinner(
         "Analizando con precisión quirúrgica mediante IA y creando"
         " bitácora..."
@@ -202,14 +204,18 @@ if st.button(
         for intento in range(3):
             try:
                 respuesta = modelo_ia.generate_content(contenido_ia)
-                break  # Si tiene éxito, rompe el bucle
-            except exceptions.ResourceExhausted:
-                if intento < 2:
-                    # Si falla, espera 65 segundos y vuelve a intentar
-                    time.sleep(65)
+                break  
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "Quota" in error_str or "exhausted" in error_str.lower():
+                    if intento < 2:
+                        mensaje_pausa.warning(f"⏳ Pausa de seguridad por cuota gratuita. Esperando 65 segundos (Intento {intento+1} de 3)... No cierres la ventana.")
+                        time.sleep(65)
+                        mensaje_pausa.empty()
+                    else:
+                        raise Exception("Se agotaron los reintentos de espera. Intenta en un par de minutos.")
                 else:
-                    raise  # Si falla 3 veces, detiene el proceso
-
+                    raise e
         # --- FIN DEL SISTEMA ---
 
         match = re.search(r"\{.*\}", respuesta.text, re.DOTALL)
@@ -375,185 +381,3 @@ if st.button(
               ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
           ])
       )
-      elementos.append(t_info)
-      elementos.append(Spacer(1, 4))
-
-      t_control = Table([
-          [
-              "PARÁMETRO / CONTROL",
-              "REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)",
-              "CUMPLE SASISOPA",
-              "ESTATUS / VALORES",
-          ],
-          [
-              Paragraph("<b>CONTROL VEEDER-ROOT</b>", estilo_celda_centro),
-              Paragraph(
-                  "• Verificación de descarga autorizada.<br/>• Aumento Bruto"
-                  f" CT: <b>{vol_descargado:,.2f} L</b>",
-                  estilo_celda,
-              ),
-              Paragraph("[ X ] SÍ    [    ] NO", estilo_celda_centro),
-              Paragraph(
-                  f"Facturado: {vol_facturado:,.2f} L<br/>Descargado (Bruto):"
-                  f" {vol_descargado:,.2f} L<br/><b>Desviación (Dif):</b>"
-                  f" {desviacion:,.2f} L",
-                  estilo_celda,
-              ),
-          ],
-      ], colWidths=[110, 250, 90, 110])
-      t_control.setStyle(
-          TableStyle([
-              ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#a81c1c")),
-              ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-              ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-              ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-              ("ALIGN", (2, 1), (2, 1), "CENTER"),
-              ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-              ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#333333")),
-          ])
-      )
-      elementos.append(t_control)
-      elementos.append(Spacer(1, 4))
-
-      t_obs = Table([[
-          "OBSERVACIONES / ACCIONES:",
-          Paragraph(
-              f"Recepción amparada con Factura {factura_num}. Aumento Bruto"
-              " validado mediante registro fotográfico en Anexo 2.",
-              estilo_celda,
-          ),
-      ]], colWidths=[130, 430])
-      t_obs.setStyle(
-          TableStyle([
-              ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#f7f7f7")),
-              ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-              ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-              ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#333333")),
-              ("VALIGN", (0, 0), (-1, -1), "TOP"),
-          ])
-      )
-      elementos.append(t_obs)
-      elementos.append(Spacer(1, 20))
-
-      sj, sy = buscar_imagen("firma_javier"), buscar_imagen("firma_yahir")
-      cj = (
-          RLImage(sj, width=100, height=35)
-          if sj
-          else Paragraph("<b>[Firma Javier]</b>", styles["Normal"])
-      )
-      cy = (
-          RLImage(sy, width=100, height=35)
-          if sy
-          else Paragraph("<b>[Firma Yahir]</b>", styles["Normal"])
-      )
-      t_firmas = Table([[cj, cy], [
-          "________________________________________",
-          "________________________________________",
-      ], [
-          "Javier Arturo García Venegas",
-          "Yahir Caro Martínez",
-      ], [
-          "Operador / Encargado de Descarga (Realizó)",
-          "Representante Técnico / Administrador (Autorizó)",
-      ]], colWidths=[280, 280])
-      t_firmas.setStyle(
-          TableStyle([
-              ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-              ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-              ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
-              ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-              ("TEXTCOLOR", (0, 3), (-1, 3), colors.HexColor("#444444")),
-          ])
-      )
-      elementos.append(t_firmas)
-
-      elementos.append(PageBreak())
-      elementos.append(t_cabecera)
-      elementos.append(Spacer(1, 15))
-      elementos.append(
-          Paragraph(
-              "ANEXO DE EVIDENCIA: LECTURA VISUAL DE TIRA VEEDER-ROOT",
-              ParagraphStyle(
-                  "TitAnexo",
-                  fontName="Helvetica-Bold",
-                  fontSize=9,
-                  textColor=colors.HexColor("#a81c1c"),
-                  alignment=1,
-                  spaceAfter=8,
-              ),
-          )
-      )
-
-      temp_img_path = "temp_veeder.png"
-      img_tira.save(temp_img_path)
-
-      img_veeder_pdf = RLImage(temp_img_path, width=190, height=300)
-      img_veeder_pdf.hAlign = "CENTER"
-      elementos.append(img_veeder_pdf)
-      elementos.append(Spacer(1, 10))
-
-      t_notas = Table([[
-          "Auditoría Documental:",
-          Paragraph(
-              f"• Factura: {factura_num} | Litros Facturados:"
-              f" {vol_facturado:,.2f} L<br/>• Litros Descargados (Bruto):"
-              f" {vol_descargado:,.2f} L | <b>Desviación (Dif):</b>"
-              f" {desviacion:,.2f} L",
-              estilo_celda,
-          ),
-      ]], colWidths=[130, 430])
-      t_notas.setStyle(
-          TableStyle([
-              ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#fdfdfd")),
-              ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-              ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-              ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
-              ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-          ])
-      )
-      elementos.append(t_notas)
-
-      doc.build(elementos)
-
-      # --- ENVÍO A GOOGLE DRIVE ---
-      try:
-        url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
-        if url_script:
-          with open(ruta_pdf, "rb") as f:
-            pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-          res = requests.post(
-              url_script,
-              data={
-                  "archivoB64": pdf_b64,
-                  "nombreArchivo": nombre_archivo_pdf,
-              },
-          )
-
-          if "éxito" in res.text.lower():
-            st.success(
-                f"✅ Recepción validada: {vol_facturado:,.2f} L vs"
-                f" {vol_descargado:,.2f} L (Bruto)."
-            )
-            st.success(
-                "☁️ ¡Bitácora enviada y guardada en tu Google Drive con éxito!"
-            )
-            st.info(
-                f"⏭️ El sistema ha reservado el folio <b>{siguiente_folio}</b>"
-                " para la próxima.",
-                icon="📌",
-            )
-          else:
-            st.warning(f"⚠️ Error del puente Drive: {res.text}")
-        else:
-          st.warning("⚠️ Falta configurar URL_GOOGLE_SCRIPT en los Secrets.")
-      except Exception as e:
-        st.warning(f"⚠️ Error enviando a Drive: {e}")
-
-      with open(ruta_pdf, "rb") as pdf_file:
-        st.download_button(
-            label="⬇️ Descargar Copia a tu Celular/PC",
-            data=pdf_file,
-            file_name=nombre_archivo_pdf,
-            mime="application/pdf",
-        )
