@@ -105,7 +105,7 @@ st.markdown("---")
 @st.cache_data(show_spinner=False)
 def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key):
     genai.configure(api_key=api_key)
-    modelo = genai.GenerativeModel("gemini-1.5-flash")
+    modelo = genai.GenerativeModel("gemini-1.5-flash-latest")
     contenido = [prompt_texto]
     if texto_extraido:
         contenido.append(f"Texto extraído del PDF: {texto_extraido}")
