@@ -4,8 +4,6 @@ import json
 import os
 import re
 import time
-import google.generativeai as genai
-from google.api_core import exceptions
 from PIL import Image, ImageOps
 import PyPDF2
 from reportlab.lib import colors
@@ -104,23 +102,34 @@ st.markdown("---")
 
 @st.cache_data(show_spinner=False)
 def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key):
-    genai.configure(api_key=api_key)
-    modelo = genai.GenerativeModel("gemini-1.5-flash")
-    contenido = [prompt_texto]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    parts = [{"text": prompt_texto}]
+    
     if texto_extraido:
-        contenido.append(f"Texto extraído del PDF: {texto_extraido}")
+        parts.append({"text": f"Texto extraído del PDF: {texto_extraido}"})
     if b_factura:
-        contenido.append(Image.open(io.BytesIO(b_factura)))
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(b_factura).decode("utf-8")}})
     if b_tira:
-        contenido.append(Image.open(io.BytesIO(b_tira)))
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(b_tira).decode("utf-8")}})
+        
+    payload = {"contents": [{"parts": parts}]}
+    headers = {"Content-Type": "application/json"}
+    
     for intento in range(3):
         try:
-            return modelo.generate_content(contenido).text
-        except exceptions.ResourceExhausted:
-            if intento < 2:
-                time.sleep(20)
+            res = requests.post(url, json=payload, headers=headers)
+            if res.status_code == 200:
+                return res.json()['candidates'][0]['content']['parts'][0]['text']
+            elif res.status_code == 429:
+                if intento < 2:
+                    time.sleep(15)
+                else:
+                    raise Exception("Cuota de IA excedida.")
             else:
-                raise
+                raise Exception(f"Fallo de conexión HTTP {res.status_code}: {res.text}")
+        except Exception as e:
+            if intento == 2:
+                raise e
 
 if st.button("Procesar y Subir a Google Drive", type="primary", use_container_width=True):
     if (not factura_file and img_factura is None) or img_tira is None:
