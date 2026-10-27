@@ -44,11 +44,16 @@ def buscar_imagen(nombre_base):
 
 def limpiar_flotante(valor, nombre_campo):
     if valor is None or str(valor).strip() == "":
-        raise ValueError(f"El campo '{nombre_campo}' llegó vacío desde la IA.")
-    texto_limpio = re.sub(r"[^\d.-]", "", str(valor).replace(",", ""))
-    if not texto_limpio:
+        return 0.0
+    texto = str(valor).strip().replace(",", "")
+    coincidencias = re.findall(r"[-+]?\d*\.?\d+", texto)
+    if not coincidencias:
         raise ValueError(f"El campo '{nombre_campo}' no contiene un número válido (Valor recibido: '{valor}').")
-    return float(texto_limpio)
+    numero = float(coincidencias[0])
+    # Si la factura expresa el volumen en metros cúbicos (ej. 43.628 m3), convertir a litros
+    if 10.0 <= numero <= 99.999 and "." in coincidencias[0] and len(coincidencias[0].split(".")[1]) == 3:
+        numero = numero * 1000.0
+    return numero
 
 if "folio_actual" not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
@@ -133,10 +138,10 @@ def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_
     genai.configure(api_key=api_key)
     modelo = genai.GenerativeModel("gemini-3.8-flash")
     contenido = [prompt_texto]
-    if texto_extraido and texto_extraido.strip():
-        contenido.append(f"Texto extraído del PDF: {texto_extraido}")
-    elif pdf_raw:
+    if pdf_raw:
         contenido.append({"mime_type": "application/pdf", "data": pdf_raw})
+    if texto_extraido and texto_extraido.strip():
+        contenido.append(f"Texto de apoyo extraído del PDF:\n{texto_extraido}")
     if b_factura:
         contenido.append(Image.open(io.BytesIO(b_factura)))
     if b_tira:
@@ -171,7 +176,22 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 st.error("❌ El archivo PDF de la factura está vacío o dañado.")
                 st.stop()
 
-            prompt = """Eres un auditor fiscal y operativo experto en estaciones de servicio en México. 1. FACTURA: Busca Folio, UUID y EXTRAE EXCLUSIVAMENTE LITROS DE MAGNA/REGULAR (ignora Premium/Diésel/Pesos). 2. TIRA VEEDER-ROOT: Busca 'AUMENTO BRUTO CT' del tanque 1, fecha (DD/MM/AAAA) y horarios. Devuelve ÚNICAMENTE JSON válido: {"uuid": "...", "factura": "...", "litros_facturados": 0.0, "litros_descargados": 0.0, "fecha": "...", "hora_inicio": "...", "hora_termino": "..."}"""
+            prompt = """Eres un auditor fiscal y operativo experto en estaciones de servicio en México (NOM-005-ASEA-2016).
+Analiza los documentos adjuntos (Factura y Tira Veeder-Root) y extrae con exactitud los siguientes datos:
+1. FACTURA:
+   - "factura": Folio o Serie+Folio de la factura (ejemplo: "B4705", "B4709").
+   - "uuid": Folio Fiscal UUID completo (formato XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX).
+   - "litros_facturados": Cantidad numérica de LITROS facturados en el concepto del combustible (busca el volumen/cantidad en litros, ej. 43628.00; ignora importes en pesos). Si hay varios productos, prioriza Regular/Magna; si solo hay un producto en la factura, extrae los litros de ese producto. NUNCA devuelvas 0 si aparece una cantidad en la factura.
+   - "embarque": Número de embarque o remisión si aparece en la factura (ej. "779274"), o "S/D" si no aparece.
+   - "tanque_at": Identificador del autotanque/tonel/placa si aparece en la factura (ej. "23UY9X"), o "S/D" si no aparece.
+2. TIRA VEEDER-ROOT:
+   - "litros_descargados": Busca la línea 'AUMENTO BRUTO' (a veces impresa como 'AUMENTO BRUTO = 43285' o 'AUMENTO BRIUTO') y extrae ese valor numérico exacto (ej. 43285.0 o 43342.0), sin importar si el ticket dice T1 o T2. NO uses el Aumento Neto. NUNCA devuelvas 0 si hay un número en AUMENTO BRUTO.
+   - "fecha": Fecha del ticket en formato DD/MM/AAAA (convierte años de 2 dígitos como 13-10-26 a 13/10/2026).
+   - "hora_inicio": Hora de INICIO AUMENTO en formato HH:MM (ej. "00:01" o "12:51").
+   - "hora_termino": Hora de FIN AUMENTO en formato HH:MM (ej. "00:47" o "13:27").
+
+Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
+{"uuid": "...", "factura": "...", "litros_facturados": 0.0, "litros_descargados": 0.0, "fecha": "DD/MM/AAAA", "hora_inicio": "HH:MM", "hora_termino": "HH:MM", "embarque": "...", "tanque_at": "..."}"""
 
             respuesta_texto = ""
             try:
@@ -194,7 +214,14 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 fecha_tira = str(datos_ia.get("fecha", "SD")).strip().replace("\n", "")
                 hora_inicio = str(datos_ia.get("hora_inicio", "SD")).strip().replace("\n", "")
                 hora_termino = str(datos_ia.get("hora_termino", "SD")).strip().replace("\n", "")
+                embarque = str(datos_ia.get("embarque", "S/D")).strip().replace("\n", "") or "S/D"
+                tanque_at = str(datos_ia.get("tanque_at", "S/D")).strip().replace("\n", "") or "S/D"
                 desviacion = abs(vol_facturado - vol_descargado)
+
+                if vol_facturado <= 0 or vol_descargado <= 0:
+                    st.warning(
+                        f"⚠️ Atención: Verifica la lectura de litros (Facturados: {vol_facturado:,.2f} L | Descargados: {vol_descargado:,.2f} L)."
+                    )
 
             except Exception as e:
                 st.error(f"❌ Error al extraer/validar datos de la IA: {e}")
@@ -207,90 +234,187 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_num}.pdf"
                 ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
 
-                doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
+                doc = SimpleDocTemplate(
+                    ruta_pdf,
+                    pagesize=letter,
+                    rightMargin=30,
+                    leftMargin=30,
+                    topMargin=25,
+                    bottomMargin=25
+                )
                 elementos, styles = [], getSampleStyleSheet()
-                estilo_celda = ParagraphStyle("Celda", fontName="Helvetica", fontSize=6.5, leading=8.5)
-                estilo_celda_centro = ParagraphStyle("CeldaCentro", fontName="Helvetica", fontSize=6.5, leading=8.5, alignment=1)
+
+                color_rojo = colors.HexColor("#a81c1c")
+                color_rosa = colors.HexColor("#f9ebea")
+                color_gris = colors.HexColor("#f2f2f2")
+                color_gris_claro = colors.HexColor("#f9f9f9")
+
+                estilo_enc_der = ParagraphStyle(
+                    "EncDer",
+                    fontName="Helvetica",
+                    fontSize=7.5,
+                    leading=10,
+                    alignment=2,
+                    textColor=colors.HexColor("#222222")
+                )
+                estilo_sasisopa = ParagraphStyle(
+                    "Sasisopa",
+                    fontName="Helvetica-Bold",
+                    fontSize=8.5,
+                    leading=11,
+                    alignment=1,
+                    textColor=colors.white
+                )
+                estilo_bita = ParagraphStyle(
+                    "Bita",
+                    fontName="Helvetica-Bold",
+                    fontSize=8.5,
+                    leading=11,
+                    alignment=1,
+                    textColor=color_rojo
+                )
+                estilo_label = ParagraphStyle(
+                    "Label",
+                    fontName="Helvetica-Bold",
+                    fontSize=6.8,
+                    leading=8.8,
+                    textColor=colors.black
+                )
+                estilo_celda = ParagraphStyle(
+                    "Celda",
+                    fontName="Helvetica",
+                    fontSize=6.8,
+                    leading=8.8,
+                    textColor=colors.black
+                )
+                estilo_celda_bold = ParagraphStyle(
+                    "CeldaBold",
+                    fontName="Helvetica-Bold",
+                    fontSize=6.8,
+                    leading=8.8,
+                    textColor=colors.black
+                )
+                estilo_celda_centro = ParagraphStyle(
+                    "CeldaCentro",
+                    fontName="Helvetica-Bold",
+                    fontSize=7.0,
+                    leading=9.0,
+                    alignment=1,
+                    textColor=colors.black
+                )
+                estilo_th_control = ParagraphStyle(
+                    "ThControl",
+                    fontName="Helvetica-Bold",
+                    fontSize=6.8,
+                    leading=8.8,
+                    alignment=1,
+                    textColor=colors.white
+                )
+                estilo_firma_nombre = ParagraphStyle(
+                    "FirmaNombre",
+                    fontName="Helvetica-Bold",
+                    fontSize=7.5,
+                    leading=9.5,
+                    alignment=1,
+                    textColor=colors.black
+                )
+                estilo_firma_cargo = ParagraphStyle(
+                    "FirmaCargo",
+                    fontName="Helvetica",
+                    fontSize=6.5,
+                    leading=8.5,
+                    alignment=1,
+                    textColor=colors.HexColor("#444444")
+                )
 
                 logo_path = buscar_imagen("logo_teika") or buscar_imagen("cabecera")
-                img_logo = RLImage(logo_path, width=85, height=40) if logo_path else Paragraph("[Logo]", styles["Normal"])
+                img_logo_p1 = RLImage(logo_path, width=95, height=42) if logo_path else Paragraph("<b>[Logo]</b>", styles["Normal"])
+                img_logo_p2 = RLImage(logo_path, width=95, height=42) if logo_path else Paragraph("<b>[Logo]</b>", styles["Normal"])
 
-                t_cabecera = Table([[img_logo, Paragraph("<b>COMBUSTIBLES BUENOS AIRES S.A. DE C.V.<br/>JANOS, CHIHUAHUA.</b>", ParagraphStyle("E", leading=12))]], colWidths=[95, 465])
-                elementos.extend([t_cabecera, Spacer(1, 10)])
+                # --- ENCABEZADO PÁGINA 1 ---
+                texto_cabecera_p1 = (
+                    "<font size=10><b>COMBUSTIBLES BUENOS AIRES S.A. DE C.V.</b></font><br/>"
+                    "CAMPO 4 SN, COLONIA BUENOS AIRES, JANOS, CHIHUAHUA. C.P. 31844."
+                )
+                t_cabecera_p1 = Table(
+                    [[img_logo_p1, Paragraph(texto_cabecera_p1, estilo_enc_der)]],
+                    colWidths=[110, 442]
+                )
+                t_cabecera_p1.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                    ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+                    ('LINEBELOW', (0, 0), (-1, -1), 1.5, color_rojo),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ]))
+                elementos.extend([t_cabecera_p1, Spacer(1, 8)])
 
-                estilo_bita = ParagraphStyle("Bita", fontName="Helvetica-Bold", fontSize=9, textColor=colors.HexColor("#a81c1c"), alignment=1)
-                t_titulos = Table([[Paragraph("SISTEMA SASISOPA", ParagraphStyle("S", alignment=1, textColor=colors.white))], [Paragraph(f"BITÁCORA OFICIAL FOLIO: {folio_str}", estilo_bita)]])
-                t_titulos.setStyle(TableStyle([('BACKGROUND', (0,0), (0,0), colors.HexColor("#a81c1c")), ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#a81c1c"))]))
-                elementos.extend([t_titulos, Spacer(1, 4)])
+                # --- TÍTULOS PÁGINA 1 ---
+                t_titulos = Table([
+                    [Paragraph("SISTEMA DE ADMINISTRACIÓN (SASISOPA) NOM-005-ASEA-2016", estilo_sasisopa)],
+                    [Paragraph(f"BITÁCORA OFICIAL DE RECEPCIÓN, DESCARGA Y CONTROL VEEDER-ROOT | FOLIO: {folio_str}", estilo_bita)]
+                ], colWidths=[552])
+                t_titulos.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, 0), color_rojo),
+                    ('BACKGROUND', (0, 1), (0, 1), color_rosa),
+                    ('BOX', (0, 0), (-1, -1), 1, color_rojo),
+                    ('LINEABOVE', (0, 1), (-1, 1), 0.8, color_rojo),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                elementos.extend([t_titulos, Spacer(1, 6)])
 
+                # --- TABLA DE INFORMACIÓN GENERAL (5 FILAS x 4 COLUMNAS) ---
+                texto_autotanque = f"Emb: {embarque} | Tq: {tanque_at} | Op: Javier Arturo Garcia"
                 t_info = Table([
-                    ["FACTURA:", Paragraph(f"{factura_raw}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
-                    ["PRODUCTO:", f"MAGNA ({vol_facturado:,.2f} L)", "PROVEEDOR:", "UNEGAS"],
-                    ["FECHA DESCARGA:", Paragraph(f"{fecha_tira}", estilo_celda), "HORARIO:", Paragraph(f"{hora_inicio} a {hora_termino}", estilo_celda)]
-                ], colWidths=[90, 190, 90, 190])
-                t_info.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 0.5, colors.black), ('FONTSIZE', (0,0), (-1,-1), 6.5)]))
-                elementos.extend([t_info, Spacer(1, 4)])
+                    [
+                        Paragraph("FACTURA:", estilo_label),
+                        Paragraph(f"<b>{factura_raw}</b>", estilo_celda),
+                        Paragraph("RFC ESTACIÓN:", estilo_label),
+                        Paragraph("CBA140131V12", estilo_celda)
+                    ],
+                    [
+                        Paragraph("PERMISO CRE:", estilo_label),
+                        Paragraph("PL/3910/EXP/ES/2015", estilo_celda),
+                        Paragraph("FOLIO FISCAL:", estilo_label),
+                        Paragraph(f"{uuid}", estilo_celda)
+                    ],
+                    [
+                        Paragraph("PRODUCTO:", estilo_label),
+                        Paragraph(f"<b>REGULAR (MAGNA) ({vol_facturado:,.2f} L)</b>", estilo_celda),
+                        Paragraph("PROVEEDOR:", estilo_label),
+                        Paragraph("UNEGAS DISTRIBUCION (UDA171106KV9)", estilo_celda)
+                    ],
+                    [
+                        Paragraph("AUTOTANQUE:", estilo_label),
+                        Paragraph(texto_autotanque, estilo_celda),
+                        Paragraph("DESTINO:", estilo_label),
+                        Paragraph("Combustibles Buenos Aires", estilo_celda)
+                    ],
+                    [
+                        Paragraph("FECHA DESCARGA:", estilo_label),
+                        Paragraph(f"{fecha_tira}", estilo_celda),
+                        Paragraph("HORARIO (INICIO - FIN):", estilo_label),
+                        Paragraph(f"{hora_inicio} a {hora_termino}", estilo_celda)
+                    ]
+                ], colWidths=[95, 181, 105, 171])
+                t_info.setStyle(TableStyle([
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                    ('BACKGROUND', (0, 0), (0, -1), color_gris),
+                    ('BACKGROUND', (2, 0), (2, -1), color_gris),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+                ]))
+                elementos.extend([t_info, Spacer(1, 8)])
 
-                t_control = Table([
-                    ["PARAMETRO", "REGISTRO", "CUMPLE", "VALORES"],
-                    ["VEEDER-ROOT", Paragraph(f"Aumento Bruto: {vol_descargado:,.2f} L", estilo_celda), "[X] SÍ", Paragraph(f"Desviación: {desviacion:,.2f} L", estilo_celda)]
-                ], colWidths=[110, 250, 90, 110])
-                t_control.setStyle(TableStyle([('BACKGROUND', (0, 0), (1, 0), colors.HexColor("#a81c1c")), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('GRID', (0, 0), (-1,-1), 0.5, colors.black), ('FONTSIZE', (0,0), (-1,-1), 6.5)]))
-                elementos.extend([t_control, Spacer(1, 20)])
-
-                sj, sy = buscar_imagen("firma_javier"), buscar_imagen("firma_yahir")
-                cj = RLImage(sj, width=100, height=35) if sj else Paragraph("[Firma Javier]", styles["Normal"])
-                cy = RLImage(sy, width=100, height=35) if sy else Paragraph("[Firma Yahir]", styles["Normal"])
-
-                t_firmas = Table([[cj, cy], ["Javier A. García", "Yahir Caro M."]], colWidths=[280, 280])
-                t_firmas.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('FONTSIZE', (0,0), (-1,-1), 6.5)]))
-                elementos.extend([t_firmas, PageBreak(), t_cabecera, Spacer(1, 15)])
-
-                temp_img_path = "temp_veeder.png"
-                img_tira.save(temp_img_path)
-                img_veeder_pdf = RLImage(temp_img_path, width=190, height=300)
-                img_veeder_pdf.hAlign = "CENTER"
-                elementos.extend([Paragraph("ANEXO DE EVIDENCIA", estilo_bita), img_veeder_pdf, Spacer(1, 10)])
-
-                doc.build(elementos)
-
-                siguiente_folio = int(folio_input) + 1
-                guardar_folio(siguiente_folio)
-                st.session_state.folio_actual = siguiente_folio
-
-            except Exception as e_pdf_build:
-                st.error(f"❌ Error crítico al generar el archivo PDF local: {e_pdf_build}")
-                st.stop()
-
-            try:
-                url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
-                if url_script:
-                    with open(ruta_pdf, "rb") as f:
-                        pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
-                    res = requests.post(
-                        url_script.strip(),
-                        data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf},
-                        timeout=45
-                    )
-                    respuesta_drive = res.text.strip().lower()
-                    if any(palabra in respuesta_drive for palabra in ["éxito", "exito", "success"]):
-                        st.success("✅ ¡Bitácora enviada y guardada en tu Google Drive!")
-                        st.info(f"📌 Siguiente folio reservado: {siguiente_folio}")
-                    else:
-                        st.warning(f"⚠️ Respuesta inesperada de Google Drive (Código {res.status_code}): {res.text}")
-                else:
-                    st.warning("⚠️ Falta configurar URL_GOOGLE_SCRIPT en los Secrets de Streamlit.")
-            except Exception as e_net:
-                st.warning(f"⚠️ El PDF se creó correctamente, pero falló el envío a Google Drive: {e_net}")
-
-            try:
-                with open(ruta_pdf, "rb") as pdf_file:
-                    st.download_button(
-                        label="📥 Descargar Copia",
-                        data=pdf_file.read(),
-                        file_name=nombre_archivo_pdf,
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
-            except Exception as e_dl:
-                st.error(f"❌ Error al habilitar el botón de descarga: {e_dl}")
+                # --- TABLA DE CONTROL VEEDER-ROOT ---
+                registro_vr_html = (
+                    "• Verificación de descarga autorizada.<br/>"
+                    f"• <b>Aumento Bruto CT: {vol_descargado:,.2f} L</b>"
+                )
+                estatus_valores_html = (
+                    f"Facturado: {vol_facturado:,.2f} L<br/>"
+                    f"Descargado (Bruto): {vol_descargado:,.2f} L<br/>"
