@@ -44,38 +44,11 @@ def buscar_imagen(nombre_base):
 
 def limpiar_flotante(valor, nombre_campo):
     if valor is None or str(valor).strip() == "":
-        raise ValueError(f"El campo '{nombre_campo}' llegó vacío (None) desde la IA.")
+        raise ValueError(f"El campo '{nombre_campo}' llegó vacío desde la IA.")
     texto_limpio = re.sub(r"[^\d.-]", "", str(valor).replace(",", ""))
     if not texto_limpio:
         raise ValueError(f"El campo '{nombre_campo}' no contiene un número válido (Valor recibido: '{valor}').")
     return float(texto_limpio)
-
-def seleccionar_modelo_activo(api_key):
-    genai.configure(api_key=api_key)
-    preferidos = [
-        "models/gemini-2.5-flash",
-        "models/gemini-2.0-flash",
-        "models/gemini-2.0-flash-exp",
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-pro"
-    ]
-    try:
-        disponibles = [
-            m.name for m in genai.list_models()
-            if "generateContent" in getattr(m, "supported_generation_methods", [])
-        ]
-        for pref in preferidos:
-            if pref in disponibles:
-                return pref
-        for disp in disponibles:
-            if "flash" in disp.lower() or "gemini" in disp.lower():
-                return disp
-        if disponibles:
-            return disponibles[0]
-    except Exception:
-        pass
-    return "gemini-2.5-flash"
 
 if "folio_actual" not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
@@ -157,8 +130,8 @@ st.markdown("---")
 
 @st.cache_data(show_spinner=False)
 def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key, pdf_raw=None):
-    nombre_modelo = seleccionar_modelo_activo(api_key)
-    modelo = genai.GenerativeModel(nombre_modelo)
+    genai.configure(api_key=api_key)
+    modelo = genai.GenerativeModel("gemini-3.8-flash")
     contenido = [prompt_texto]
     if texto_extraido and texto_extraido.strip():
         contenido.append(f"Texto extraído del PDF: {texto_extraido}")
@@ -172,7 +145,7 @@ def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_
         try:
             respuesta = modelo.generate_content(contenido)
             if not respuesta or not respuesta.text:
-                raise ValueError(f"El modelo '{nombre_modelo}' devolvió una respuesta vacía.")
+                raise ValueError("El modelo 'gemini-3.8-flash' devolvió una respuesta vacía.")
             return respuesta.text
         except exceptions.ResourceExhausted:
             if intento < 2:
@@ -274,7 +247,7 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
                 elementos.extend([t_firmas, PageBreak(), t_cabecera, Spacer(1, 15)])
 
                 temp_img_path = "temp_veeder.png"
-                img_tira.convert("RGB").save(temp_img_path, format="PNG")
+                img_tira.save(temp_img_path)
                 img_veeder_pdf = RLImage(temp_img_path, width=190, height=300)
                 img_veeder_pdf.hAlign = "CENTER"
                 elementos.extend([Paragraph("ANEXO DE EVIDENCIA", estilo_bita), img_veeder_pdf, Spacer(1, 10)])
