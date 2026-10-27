@@ -4,6 +4,8 @@ import json
 import os
 import re
 import time
+import google.generativeai as genai
+from google.api_core import exceptions
 from PIL import Image, ImageOps
 import PyPDF2
 from reportlab.lib import colors
@@ -40,10 +42,45 @@ def buscar_imagen(nombre_base):
             return f"{nombre_base}.{ext}"
     return None
 
+def limpiar_flotante(valor, nombre_campo):
+    if valor is None or str(valor).strip() == "":
+        raise ValueError(f"El campo '{nombre_campo}' llegó vacío (None) desde la IA.")
+    texto_limpio = re.sub(r"[^\d.-]", "", str(valor).replace(",", ""))
+    if not texto_limpio:
+        raise ValueError(f"El campo '{nombre_campo}' no contiene un número válido (Valor recibido: '{valor}').")
+    return float(texto_limpio)
+
+def seleccionar_modelo_activo(api_key):
+    genai.configure(api_key=api_key)
+    preferidos = [
+        "models/gemini-2.5-flash",
+        "models/gemini-2.0-flash",
+        "models/gemini-2.0-flash-exp",
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-flash-latest",
+        "models/gemini-1.5-pro"
+    ]
+    try:
+        disponibles = [
+            m.name for m in genai.list_models()
+            if "generateContent" in getattr(m, "supported_generation_methods", [])
+        ]
+        for pref in preferidos:
+            if pref in disponibles:
+                return pref
+        for disp in disponibles:
+            if "flash" in disp.lower() or "gemini" in disp.lower():
+                return disp
+        if disponibles:
+            return disponibles[0]
+    except Exception:
+        pass
+    return "gemini-2.5-flash"
+
 if "folio_actual" not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
 
-st.title("ERP | Recepción y Descargas")
+st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
 st.markdown("---")
 
@@ -59,79 +96,91 @@ with col1:
         if factura_file:
             if factura_file.type == "application/pdf":
                 try:
-                    reader = PyPDF2.PdfReader(factura_file)
+                    bytes_pdf_raw = factura_file.getvalue()
+                    reader = PyPDF2.PdfReader(io.BytesIO(bytes_pdf_raw))
                     for page in reader.pages:
-                        texto_pdf += page.extract_text() + "\n"
-                except Exception:
-                    pass
+                        extraido = page.extract_text()
+                        if extraido:
+                            texto_pdf += extraido + "\n"
+                except Exception as e_pdf:
+                    st.warning(f"Aviso al leer texto del PDF: {e_pdf}")
             else:
-                bytes_factura = factura_file.getvalue()
-                img_factura = ImageOps.exif_transpose(Image.open(factura_file))
+                try:
+                    bytes_factura = factura_file.getvalue()
+                    img_factura = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_factura)))
+                except Exception as e_img:
+                    st.error(f"Error al abrir la imagen de la factura: {e_img}")
     else:
         foto_factura_cam = st.camera_input("Toma foto de la factura", key="camara_factura")
         if foto_factura_cam:
-            bytes_factura = foto_factura_cam.getvalue()
-            img_factura = ImageOps.exif_transpose(Image.open(foto_factura_cam))
+            try:
+                bytes_factura = foto_factura_cam.getvalue()
+                img_factura = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_factura)))
+            except Exception as e_cam:
+                st.error(f"Error al procesar foto de cámara de factura: {e_cam}")
 
 with col2:
     st.markdown("**2. Tira Veeder-Root (Foto o Cámara)**")
-    paste_result = paste_image_button(label="Pegar imagen (PC)", background_color="#FF4B4B", hover_background_color="#FF6666", key="paste_btn")
+    paste_result = paste_image_button(label="📋 Pegar imagen (PC)", background_color="#FF4B4B", hover_background_color="#FF6666", key="paste_btn")
     img_tira, bytes_tira = None, None
 
     if paste_result.image_data is not None:
-        img_tira = ImageOps.exif_transpose(paste_result.image_data)
-        buffer_paste = io.BytesIO()
-        img_tira.save(buffer_paste, format="PNG")
-        bytes_tira = buffer_paste.getvalue()
-        st.success("Imagen pegada correctamente.")
+        try:
+            img_tira = ImageOps.exif_transpose(paste_result.image_data)
+            buffer_paste = io.BytesIO()
+            img_tira.save(buffer_paste, format="PNG")
+            bytes_tira = buffer_paste.getvalue()
+            st.success("✅ Imagen pegada correctamente.")
+        except Exception as e_paste:
+            st.error(f"Error al procesar la imagen pegada: {e_paste}")
     else:
         metodo_foto = st.radio("Método Tira:", ["Usar Cámara", "Subir Archivo"], horizontal=True, key="metodo_captura")
         if metodo_foto == "Usar Cámara":
             foto_camara = st.camera_input("Toma la foto del ticket", key="camara_veeder")
             if foto_camara:
-                bytes_tira = foto_camara.getvalue()
-                img_tira = ImageOps.exif_transpose(Image.open(foto_camara))
+                try:
+                    bytes_tira = foto_camara.getvalue()
+                    img_tira = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_tira)))
+                except Exception as e_cam_v:
+                    st.error(f"Error al procesar cámara de Tira: {e_cam_v}")
         else:
             tira_up = st.file_uploader("Sube la foto:", type=["jpg", "jpeg", "png"], key="galeria_veeder")
             if tira_up:
-                bytes_tira = tira_up.getvalue()
-                img_tira = ImageOps.exif_transpose(Image.open(tira_up))
+                try:
+                    bytes_tira = tira_up.getvalue()
+                    img_tira = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_tira)))
+                except Exception as e_up_v:
+                    st.error(f"Error al abrir archivo de Tira: {e_up_v}")
 
-folio_input = st.number_input("Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
+folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
 st.markdown("---")
 
 @st.cache_data(show_spinner=False)
-def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    parts = [{"text": prompt_texto}]
-    
-    if texto_extraido:
-        parts.append({"text": f"Texto extraído del PDF: {texto_extraido}"})
+def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key, pdf_raw=None):
+    nombre_modelo = seleccionar_modelo_activo(api_key)
+    modelo = genai.GenerativeModel(nombre_modelo)
+    contenido = [prompt_texto]
+    if texto_extraido and texto_extraido.strip():
+        contenido.append(f"Texto extraído del PDF: {texto_extraido}")
+    elif pdf_raw:
+        contenido.append({"mime_type": "application/pdf", "data": pdf_raw})
     if b_factura:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(b_factura).decode("utf-8")}})
+        contenido.append(Image.open(io.BytesIO(b_factura)))
     if b_tira:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(b_tira).decode("utf-8")}})
-        
-    payload = {"contents": [{"parts": parts}]}
-    headers = {"Content-Type": "application/json"}
-    
+        contenido.append(Image.open(io.BytesIO(b_tira)))
     for intento in range(3):
         try:
-            res = requests.post(url, json=payload, headers=headers)
-            if res.status_code == 200:
-                return res.json()['candidates'][0]['content']['parts'][0]['text']
-            elif res.status_code == 429:
-                if intento < 2:
-                    time.sleep(15)
-                else:
-                    raise Exception("Cuota de IA excedida.")
+            respuesta = modelo.generate_content(contenido)
+            if not respuesta or not respuesta.text:
+                raise ValueError(f"El modelo '{nombre_modelo}' devolvió una respuesta vacía.")
+            return respuesta.text
+        except exceptions.ResourceExhausted:
+            if intento < 2:
+                time.sleep(20)
             else:
-                raise Exception(f"Fallo de conexión HTTP {res.status_code}: {res.text}")
-        except Exception as e:
-            if intento == 2:
-                raise e
+                raise
 
-if st.button("Procesar y Subir a Google Drive", type="primary", use_container_width=True):
+if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
     if (not factura_file and img_factura is None) or img_tira is None:
         st.error("Proporciona tanto la Factura como la Tira Veeder-Root para continuar.")
     else:
@@ -139,36 +188,45 @@ if st.button("Procesar y Subir a Google Drive", type="primary", use_container_wi
             try:
                 api_key = st.secrets.get("GEMINI_API_KEY")
                 if not api_key:
-                    st.error("Llave Gemini no encontrada.")
+                    st.error("❌ Llave GEMINI_API_KEY no encontrada en Secrets.")
                     st.stop()
             except Exception as e:
-                st.error(f"Error credenciales: {e}")
+                st.error(f"❌ Error credenciales: {e}")
+                st.stop()
+
+            if factura_file and factura_file.type == "application/pdf" and not texto_pdf.strip() and not factura_file.getvalue():
+                st.error("❌ El archivo PDF de la factura está vacío o dañado.")
                 st.stop()
 
             prompt = """Eres un auditor fiscal y operativo experto en estaciones de servicio en México. 1. FACTURA: Busca Folio, UUID y EXTRAE EXCLUSIVAMENTE LITROS DE MAGNA/REGULAR (ignora Premium/Diésel/Pesos). 2. TIRA VEEDER-ROOT: Busca 'AUMENTO BRUTO CT' del tanque 1, fecha (DD/MM/AAAA) y horarios. Devuelve ÚNICAMENTE JSON válido: {"uuid": "...", "factura": "...", "litros_facturados": 0.0, "litros_descargados": 0.0, "fecha": "...", "hora_inicio": "...", "hora_termino": "..."}"""
 
+            respuesta_texto = ""
             try:
-                respuesta_texto = procesar_con_ia_seguro(prompt, texto_pdf, bytes_factura, bytes_tira, api_key)
+                pdf_bytes_envio = factura_file.getvalue() if (factura_file and factura_file.type == "application/pdf") else None
+                respuesta_texto = procesar_con_ia_seguro(prompt, texto_pdf, bytes_factura, bytes_tira, api_key, pdf_bytes_envio)
                 match = re.search(r"\{.*\}", respuesta_texto, re.DOTALL)
                 if match:
                     datos_ia = json.loads(match.group(0), strict=False)
                 else:
-                    raise ValueError("Formato IA inválido")
+                    raise ValueError(f"La IA no devolvió un bloque JSON válido. Respuesta cruda: {respuesta_texto}")
 
-                factura_num = str(datos_ia.get("factura", "SD")).replace("\n", "")
-                uuid = str(datos_ia.get("uuid", "SD")).replace("\n", "")
-                vol_facturado = float(datos_ia.get("litros_facturados", 0))
-                vol_descargado = float(datos_ia.get("litros_descargados", 0))
-                fecha_tira = str(datos_ia.get("fecha", "SD")).replace("\n", "")
-                hora_inicio = str(datos_ia.get("hora_inicio", "SD")).replace("\n", "")
-                hora_termino = str(datos_ia.get("hora_termino", "SD")).replace("\n", "")
+                factura_raw = str(datos_ia.get("factura", "")).strip().replace("\n", "")
+                if not factura_raw:
+                    factura_raw = "SD"
+                factura_num = re.sub(r'[\\/*?:"<>| ]', "_", factura_raw)
+
+                uuid = str(datos_ia.get("uuid", "SD")).strip().replace("\n", "")
+                vol_facturado = limpiar_flotante(datos_ia.get("litros_facturados"), "litros_facturados")
+                vol_descargado = limpiar_flotante(datos_ia.get("litros_descargados"), "litros_descargados")
+                fecha_tira = str(datos_ia.get("fecha", "SD")).strip().replace("\n", "")
+                hora_inicio = str(datos_ia.get("hora_inicio", "SD")).strip().replace("\n", "")
+                hora_termino = str(datos_ia.get("hora_termino", "SD")).strip().replace("\n", "")
                 desviacion = abs(vol_facturado - vol_descargado)
 
-                siguiente_folio = int(folio_input) + 1
-                guardar_folio(siguiente_folio)
-                st.session_state.folio_actual = siguiente_folio
             except Exception as e:
-                st.error(f"Error IA: {e}")
+                st.error(f"❌ Error al extraer/validar datos de la IA: {e}")
+                if respuesta_texto:
+                    st.code(respuesta_texto, language="json")
                 st.stop()
 
             try:
@@ -193,7 +251,7 @@ if st.button("Procesar y Subir a Google Drive", type="primary", use_container_wi
                 elementos.extend([t_titulos, Spacer(1, 4)])
 
                 t_info = Table([
-                    ["FACTURA:", Paragraph(f"{factura_num}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
+                    ["FACTURA:", Paragraph(f"{factura_raw}", estilo_celda), "RFC ESTACIÓN:", "CBA140131V12"],
                     ["PRODUCTO:", f"MAGNA ({vol_facturado:,.2f} L)", "PROVEEDOR:", "UNEGAS"],
                     ["FECHA DESCARGA:", Paragraph(f"{fecha_tira}", estilo_celda), "HORARIO:", Paragraph(f"{hora_inicio} a {hora_termino}", estilo_celda)]
                 ], colWidths=[90, 190, 90, 190])
@@ -208,7 +266,6 @@ if st.button("Procesar y Subir a Google Drive", type="primary", use_container_wi
                 elementos.extend([t_control, Spacer(1, 20)])
 
                 sj, sy = buscar_imagen("firma_javier"), buscar_imagen("firma_yahir")
-                
                 cj = RLImage(sj, width=100, height=35) if sj else Paragraph("[Firma Javier]", styles["Normal"])
                 cy = RLImage(sy, width=100, height=35) if sy else Paragraph("[Firma Yahir]", styles["Normal"])
 
@@ -217,14 +274,19 @@ if st.button("Procesar y Subir a Google Drive", type="primary", use_container_wi
                 elementos.extend([t_firmas, PageBreak(), t_cabecera, Spacer(1, 15)])
 
                 temp_img_path = "temp_veeder.png"
-                img_tira.save(temp_img_path)
+                img_tira.convert("RGB").save(temp_img_path, format="PNG")
                 img_veeder_pdf = RLImage(temp_img_path, width=190, height=300)
                 img_veeder_pdf.hAlign = "CENTER"
                 elementos.extend([Paragraph("ANEXO DE EVIDENCIA", estilo_bita), img_veeder_pdf, Spacer(1, 10)])
 
                 doc.build(elementos)
-            except Exception as e:
-                st.error(f"Error crítico al ensamblar el PDF: {e}")
+
+                siguiente_folio = int(folio_input) + 1
+                guardar_folio(siguiente_folio)
+                st.session_state.folio_actual = siguiente_folio
+
+            except Exception as e_pdf_build:
+                st.error(f"❌ Error crítico al generar el archivo PDF local: {e_pdf_build}")
                 st.stop()
 
             try:
@@ -232,19 +294,30 @@ if st.button("Procesar y Subir a Google Drive", type="primary", use_container_wi
                 if url_script:
                     with open(ruta_pdf, "rb") as f:
                         pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
-                    res = requests.post(url_script, data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf})
-                    if "éxito" in res.text.lower():
-                        st.success("¡Bitácora enviada y guardada en tu Google Drive!")
-                        st.info(f"Siguiente folio reservado: {siguiente_folio}")
+                    res = requests.post(
+                        url_script.strip(),
+                        data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf},
+                        timeout=45
+                    )
+                    respuesta_drive = res.text.strip().lower()
+                    if any(palabra in respuesta_drive for palabra in ["éxito", "exito", "success"]):
+                        st.success("✅ ¡Bitácora enviada y guardada en tu Google Drive!")
+                        st.info(f"📌 Siguiente folio reservado: {siguiente_folio}")
                     else:
-                        st.warning(f"Error Drive: {res.text}")
+                        st.warning(f"⚠️ Respuesta inesperada de Google Drive (Código {res.status_code}): {res.text}")
                 else:
-                    st.warning("Falta URL_GOOGLE_SCRIPT en Secrets.")
-            except Exception as e:
-                st.warning(f"Error red: {e}")
+                    st.warning("⚠️ Falta configurar URL_GOOGLE_SCRIPT en los Secrets de Streamlit.")
+            except Exception as e_net:
+                st.warning(f"⚠️ El PDF se creó correctamente, pero falló el envío a Google Drive: {e_net}")
 
             try:
                 with open(ruta_pdf, "rb") as pdf_file:
-                    st.download_button(label="Descargar Copia", data=pdf_file, file_name=nombre_archivo_pdf, mime="application/pdf")
-            except Exception as e:
-                pass
+                    st.download_button(
+                        label="📥 Descargar Copia",
+                        data=pdf_file.read(),
+                        file_name=nombre_archivo_pdf,
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            except Exception as e_dl:
+                st.error(f"❌ Error al habilitar el botón de descarga: {e_dl}")
