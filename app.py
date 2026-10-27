@@ -50,7 +50,6 @@ def limpiar_flotante(valor, nombre_campo):
     if not coincidencias:
         raise ValueError(f"El campo '{nombre_campo}' no contiene un número válido (Valor recibido: '{valor}').")
     numero = float(coincidencias[0])
-    # Si la factura expresa el volumen en metros cúbicos (ej. 43.628 m3), convertir a litros
     if 10.0 <= numero <= 99.999 and "." in coincidencias[0] and len(coincidencias[0].split(".")[1]) == 3:
         numero = numero * 1000.0
     return numero
@@ -219,9 +218,7 @@ Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
                 desviacion = abs(vol_facturado - vol_descargado)
 
                 if vol_facturado <= 0 or vol_descargado <= 0:
-                    st.warning(
-                        f"⚠️ Atención: Verifica la lectura de litros (Facturados: {vol_facturado:,.2f} L | Descargados: {vol_descargado:,.2f} L)."
-                    )
+                    st.warning(f"⚠️ Atención: Verifica la lectura de litros (Facturados: {vol_facturado:,.2f} L | Descargados: {vol_descargado:,.2f} L).")
 
             except Exception as e:
                 st.error(f"❌ Error al extraer/validar datos de la IA: {e}")
@@ -234,14 +231,7 @@ Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
                 nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_num}.pdf"
                 ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
 
-                doc = SimpleDocTemplate(
-                    ruta_pdf,
-                    pagesize=letter,
-                    rightMargin=30,
-                    leftMargin=30,
-                    topMargin=25,
-                    bottomMargin=25
-                )
+                doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=25, bottomMargin=25)
                 elementos, styles = [], getSampleStyleSheet()
 
                 color_rojo = colors.HexColor("#a81c1c")
@@ -249,107 +239,32 @@ Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
                 color_gris = colors.HexColor("#f2f2f2")
                 color_gris_claro = colors.HexColor("#f9f9f9")
 
-                estilo_enc_der = ParagraphStyle(
-                    "EncDer",
-                    fontName="Helvetica",
-                    fontSize=7.5,
-                    leading=10,
-                    alignment=2,
-                    textColor=colors.HexColor("#222222")
-                )
-                estilo_sasisopa = ParagraphStyle(
-                    "Sasisopa",
-                    fontName="Helvetica-Bold",
-                    fontSize=8.5,
-                    leading=11,
-                    alignment=1,
-                    textColor=colors.white
-                )
-                estilo_bita = ParagraphStyle(
-                    "Bita",
-                    fontName="Helvetica-Bold",
-                    fontSize=8.5,
-                    leading=11,
-                    alignment=1,
-                    textColor=color_rojo
-                )
-                estilo_label = ParagraphStyle(
-                    "Label",
-                    fontName="Helvetica-Bold",
-                    fontSize=6.8,
-                    leading=8.8,
-                    textColor=colors.black
-                )
-                estilo_celda = ParagraphStyle(
-                    "Celda",
-                    fontName="Helvetica",
-                    fontSize=6.8,
-                    leading=8.8,
-                    textColor=colors.black
-                )
-                estilo_celda_bold = ParagraphStyle(
-                    "CeldaBold",
-                    fontName="Helvetica-Bold",
-                    fontSize=6.8,
-                    leading=8.8,
-                    textColor=colors.black
-                )
-                estilo_celda_centro = ParagraphStyle(
-                    "CeldaCentro",
-                    fontName="Helvetica-Bold",
-                    fontSize=7.0,
-                    leading=9.0,
-                    alignment=1,
-                    textColor=colors.black
-                )
-                estilo_th_control = ParagraphStyle(
-                    "ThControl",
-                    fontName="Helvetica-Bold",
-                    fontSize=6.8,
-                    leading=8.8,
-                    alignment=1,
-                    textColor=colors.white
-                )
-                estilo_firma_nombre = ParagraphStyle(
-                    "FirmaNombre",
-                    fontName="Helvetica-Bold",
-                    fontSize=7.5,
-                    leading=9.5,
-                    alignment=1,
-                    textColor=colors.black
-                )
-                estilo_firma_cargo = ParagraphStyle(
-                    "FirmaCargo",
-                    fontName="Helvetica",
-                    fontSize=6.5,
-                    leading=8.5,
-                    alignment=1,
-                    textColor=colors.HexColor("#444444")
-                )
+                estilo_enc_der = ParagraphStyle("EncDer", fontName="Helvetica", fontSize=7.5, leading=10, alignment=2, textColor=colors.HexColor("#222222"))
+                estilo_sasisopa = ParagraphStyle("Sasisopa", fontName="Helvetica-Bold", fontSize=8.5, leading=11, alignment=1, textColor=colors.white)
+                estilo_bita = ParagraphStyle("Bita", fontName="Helvetica-Bold", fontSize=8.5, leading=11, alignment=1, textColor=color_rojo)
+                estilo_label = ParagraphStyle("Label", fontName="Helvetica-Bold", fontSize=6.8, leading=8.8, textColor=colors.black)
+                estilo_celda = ParagraphStyle("Celda", fontName="Helvetica", fontSize=6.8, leading=8.8, textColor=colors.black)
+                estilo_celda_bold = ParagraphStyle("CeldaBold", fontName="Helvetica-Bold", fontSize=6.8, leading=8.8, textColor=colors.black)
+                estilo_celda_centro = ParagraphStyle("CeldaCentro", fontName="Helvetica-Bold", fontSize=7.0, leading=9.0, alignment=1, textColor=colors.black)
+                estilo_th_control = ParagraphStyle("ThControl", fontName="Helvetica-Bold", fontSize=6.8, leading=8.8, alignment=1, textColor=colors.white)
+                estilo_firma_nombre = ParagraphStyle("FirmaNombre", fontName="Helvetica-Bold", fontSize=7.5, leading=9.5, alignment=1, textColor=colors.black)
+                estilo_firma_cargo = ParagraphStyle("FirmaCargo", fontName="Helvetica", fontSize=6.5, leading=8.5, alignment=1, textColor=colors.HexColor("#444444"))
 
                 logo_path = buscar_imagen("logo_teika") or buscar_imagen("cabecera")
                 img_logo_p1 = RLImage(logo_path, width=95, height=42) if logo_path else Paragraph("<b>[Logo]</b>", styles["Normal"])
                 img_logo_p2 = RLImage(logo_path, width=95, height=42) if logo_path else Paragraph("<b>[Logo]</b>", styles["Normal"])
 
-                # --- ENCABEZADO PÁGINA 1 ---
-                texto_cabecera_p1 = (
-                    "<font size=10><b>COMBUSTIBLES BUENOS AIRES S.A. DE C.V.</b></font><br/>"
-                    "CAMPO 4 SN, COLONIA BUENOS AIRES, JANOS, CHIHUAHUA. C.P. 31844."
-                )
-                t_cabecera_p1 = Table(
-                    [[img_logo_p1, Paragraph(texto_cabecera_p1, estilo_enc_der)]],
-                    colWidths=[110, 442]
-                )
+                texto_cabecera_p1 = "<font size=10><b>COMBUSTIBLES BUENOS AIRES S.A. DE C.V.</b></font><br/>CAMPO 4 SN, COLONIA BUENOS AIRES, JANOS, CHIHUAHUA. C.P. 31844."
+                t_cabecera_p1 = Table([[img_logo_p1, Paragraph(texto_cabecera_p1, estilo_enc_der)]], colWidths=[110, 442])
                 t_cabecera_p1.setStyle(TableStyle([
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                     ('ALIGN', (0, 0), (0, 0), 'LEFT'),
                     ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
                     ('LINEBELOW', (0, 0), (-1, -1), 1.5, color_rojo),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6)
                 ]))
                 elementos.extend([t_cabecera_p1, Spacer(1, 8)])
 
-                # --- TÍTULOS PÁGINA 1 ---
                 t_titulos = Table([
                     [Paragraph("SISTEMA DE ADMINISTRACIÓN (SASISOPA) NOM-005-ASEA-2016", estilo_sasisopa)],
                     [Paragraph(f"BITÁCORA OFICIAL DE RECEPCIÓN, DESCARGA Y CONTROL VEEDER-ROOT | FOLIO: {folio_str}", estilo_bita)]
@@ -360,43 +275,17 @@ Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
                     ('BOX', (0, 0), (-1, -1), 1, color_rojo),
                     ('LINEABOVE', (0, 1), (-1, 1), 0.8, color_rojo),
                     ('TOPPADDING', (0, 0), (-1, -1), 4),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4)
                 ]))
                 elementos.extend([t_titulos, Spacer(1, 6)])
 
-                # --- TABLA DE INFORMACIÓN GENERAL (5 FILAS x 4 COLUMNAS) ---
                 texto_autotanque = f"Emb: {embarque} | Tq: {tanque_at} | Op: Javier Arturo Garcia"
                 t_info = Table([
-                    [
-                        Paragraph("FACTURA:", estilo_label),
-                        Paragraph(f"<b>{factura_raw}</b>", estilo_celda),
-                        Paragraph("RFC ESTACIÓN:", estilo_label),
-                        Paragraph("CBA140131V12", estilo_celda)
-                    ],
-                    [
-                        Paragraph("PERMISO CRE:", estilo_label),
-                        Paragraph("PL/3910/EXP/ES/2015", estilo_celda),
-                        Paragraph("FOLIO FISCAL:", estilo_label),
-                        Paragraph(f"{uuid}", estilo_celda)
-                    ],
-                    [
-                        Paragraph("PRODUCTO:", estilo_label),
-                        Paragraph(f"<b>REGULAR (MAGNA) ({vol_facturado:,.2f} L)</b>", estilo_celda),
-                        Paragraph("PROVEEDOR:", estilo_label),
-                        Paragraph("UNEGAS DISTRIBUCION (UDA171106KV9)", estilo_celda)
-                    ],
-                    [
-                        Paragraph("AUTOTANQUE:", estilo_label),
-                        Paragraph(texto_autotanque, estilo_celda),
-                        Paragraph("DESTINO:", estilo_label),
-                        Paragraph("Combustibles Buenos Aires", estilo_celda)
-                    ],
-                    [
-                        Paragraph("FECHA DESCARGA:", estilo_label),
-                        Paragraph(f"{fecha_tira}", estilo_celda),
-                        Paragraph("HORARIO (INICIO - FIN):", estilo_label),
-                        Paragraph(f"{hora_inicio} a {hora_termino}", estilo_celda)
-                    ]
+                    [Paragraph("FACTURA:", estilo_label), Paragraph(f"<b>{factura_raw}</b>", estilo_celda), Paragraph("RFC ESTACIÓN:", estilo_label), Paragraph("CBA140131V12", estilo_celda)],
+                    [Paragraph("PERMISO CRE:", estilo_label), Paragraph("PL/3910/EXP/ES/2015", estilo_celda), Paragraph("FOLIO FISCAL:", estilo_label), Paragraph(f"{uuid}", estilo_celda)],
+                    [Paragraph("PRODUCTO:", estilo_label), Paragraph(f"<b>REGULAR (MAGNA) ({vol_facturado:,.2f} L)</b>", estilo_celda), Paragraph("PROVEEDOR:", estilo_label), Paragraph("UNEGAS DISTRIBUCION (UDA171106KV9)", estilo_celda)],
+                    [Paragraph("AUTOTANQUE:", estilo_label), Paragraph(texto_autotanque, estilo_celda), Paragraph("DESTINO:", estilo_label), Paragraph("Combustibles Buenos Aires", estilo_celda)],
+                    [Paragraph("FECHA DESCARGA:", estilo_label), Paragraph(f"{fecha_tira}", estilo_celda), Paragraph("HORARIO (INICIO - FIN):", estilo_label), Paragraph(f"{hora_inicio} a {hora_termino}", estilo_celda)]
                 ], colWidths=[95, 181, 105, 171])
                 t_info.setStyle(TableStyle([
                     ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
@@ -406,15 +295,21 @@ Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
                     ('TOPPADDING', (0, 0), (-1, -1), 4),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
                     ('LEFTPADDING', (0, 0), (-1, -1), 5),
-                    ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 5)
                 ]))
                 elementos.extend([t_info, Spacer(1, 8)])
 
-                # --- TABLA DE CONTROL VEEDER-ROOT ---
-                registro_vr_html = (
-                    "• Verificación de descarga autorizada.<br/>"
-                    f"• <b>Aumento Bruto CT: {vol_descargado:,.2f} L</b>"
-                )
-                estatus_valores_html = (
-                    f"Facturado: {vol_facturado:,.2f} L<br/>"
-                    f"Descargado (Bruto): {vol_descargado:,.2f} L<br/>"
+                registro_vr_html = f"• Verificación de descarga autorizada.<br/>• <b>Aumento Bruto CT: {vol_descargado:,.2f} L</b>"
+                estatus_valores_html = f"Facturado: {vol_facturado:,.2f} L<br/>Descargado (Bruto): {vol_descargado:,.2f} L<br/><b>Desviación (Dif): {desviacion:,.2f} L</b>"
+
+                t_control = Table([
+                    [Paragraph("PARAMETRO/CONTROL", estilo_th_control), Paragraph("REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)", estilo_th_control), Paragraph("CUMPLE SASISOPA", estilo_th_control), Paragraph("ESTATUS/VALORES", estilo_th_control)],
+                    [Paragraph("CONTROL VEEDER-ROOT", estilo_celda_bold), Paragraph(registro_vr_html, estilo_celda), Paragraph("[X] SÍ &nbsp;&nbsp; [ ] NO", estilo_celda_centro), Paragraph(estatus_valores_html, estilo_celda)]
+                ], colWidths=[105, 212, 90, 145])
+                t_control.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), color_rojo),
+                    ('BACKGROUND', (0, 1), (0, 1), color_gris),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
