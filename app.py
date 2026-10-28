@@ -1,6 +1,4 @@
 import base64, io, json, os, re, time, requests
-import google.generativeai as genai
-from google.api_core import exceptions
 from PIL import Image, ImageOps
 import PyPDF2
 from reportlab.lib import colors
@@ -46,14 +44,12 @@ def limpiar_flotante(valor, campo):
         num *= 1000.0
     return num
 
-def optimizar_imagen_ia(img_bytes):
-    if not img_bytes:
-        return None
+def optimizar_imagen_b64(img_bytes):
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(img_bytes))).convert("RGB")
-    img.thumbnail((1100, 1100), Image.Resampling.LANCZOS)
+    img.thumbnail((850, 850), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=78, optimize=True)
-    return Image.open(io.BytesIO(buf.getvalue()))
+    img.save(buf, format="JPEG", quality=72, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 if "folio_actual" not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
@@ -118,26 +114,37 @@ st.markdown("---")
 
 @st.cache_data(show_spinner=False)
 def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key, pdf_raw=None):
-    genai.configure(api_key=api_key, transport="rest")
-    modelo = genai.GenerativeModel("gemini-3.8-flash")
-    contenido = [prompt_texto]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key.strip()}"
+    parts = [{"text": prompt_texto}]
     if texto_extraido and len(texto_extraido.strip()) > 30:
-        contenido.append(f"Texto extraído de la factura PDF:\n{texto_extraido}")
+        parts.append({"text": f"Texto extraído de la factura PDF:\n{texto_extraido}"})
     elif pdf_raw:
-        contenido.append({"mime_type": "application/pdf", "data": pdf_raw})
+        parts.append({"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(pdf_raw).decode("utf-8")}})
     if b_factura:
-        contenido.append(optimizar_imagen_ia(b_factura))
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": optimizar_imagen_b64(b_factura)}})
     if b_tira:
-        contenido.append(optimizar_imagen_ia(b_tira))
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": optimizar_imagen_b64(b_tira)}})
+
+    payload = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
+    sesion = requests.Session()
+    ultimo_err = ""
     for intento in range(3):
         try:
-            res = modelo.generate_content(contenido, request_options={"timeout": 90})
-            return res.text
-        except (exceptions.ResourceExhausted, exceptions.DeadlineExceeded, exceptions.ServiceUnavailable, exceptions.InternalServerError):
-            if intento < 2:
-                time.sleep(8)
+            r = sesion.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=(15, 120))
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            elif r.status_code in (429, 500, 502, 503, 504):
+                ultimo_err = f"HTTP {r.status_code}: {r.text}"
+                time.sleep(6 * (intento + 1))
             else:
-                raise
+                raise RuntimeError(f"Error API ({r.status_code}): {r.text}")
+        except requests.exceptions.RequestException as e_req:
+            ultimo_err = str(e_req)
+            if intento < 2:
+                time.sleep(5)
+            else:
+                raise RuntimeError(f"Fallo de red tras 3 intentos de 120s: {ultimo_err}")
+    raise RuntimeError(ultimo_err)
 
 if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
     if (not factura_file and img_factura is None) or img_tira is None:
