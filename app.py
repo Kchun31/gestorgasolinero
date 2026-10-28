@@ -46,6 +46,15 @@ def limpiar_flotante(valor, campo):
         num *= 1000.0
     return num
 
+def optimizar_imagen_ia(img_bytes):
+    if not img_bytes:
+        return None
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(img_bytes))).convert("RGB")
+    img.thumbnail((1100, 1100), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=78, optimize=True)
+    return Image.open(io.BytesIO(buf.getvalue()))
+
 if "folio_actual" not in st.session_state:
     st.session_state.folio_actual = obtener_folio()
 
@@ -88,7 +97,7 @@ with col2:
     if paste_result.image_data is not None:
         img_tira = ImageOps.exif_transpose(paste_result.image_data)
         buf = io.BytesIO()
-        img_tira.save(buf, format="PNG")
+        img_tira.convert("RGB").save(buf, format="JPEG", quality=85)
         bytes_tira = buf.getvalue()
         st.success("✅ Imagen pegada correctamente.")
     else:
@@ -109,24 +118,24 @@ st.markdown("---")
 
 @st.cache_data(show_spinner=False)
 def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key, pdf_raw=None):
-    genai.configure(api_key=api_key)
+    genai.configure(api_key=api_key, transport="rest")
     modelo = genai.GenerativeModel("gemini-3.8-flash")
     contenido = [prompt_texto]
-    if pdf_raw:
+    if texto_extraido and len(texto_extraido.strip()) > 30:
+        contenido.append(f"Texto extraído de la factura PDF:\n{texto_extraido}")
+    elif pdf_raw:
         contenido.append({"mime_type": "application/pdf", "data": pdf_raw})
-    if texto_extraido and texto_extraido.strip():
-        contenido.append(f"Texto extraído del PDF:\n{texto_extraido}")
     if b_factura:
-        contenido.append(Image.open(io.BytesIO(b_factura)))
+        contenido.append(optimizar_imagen_ia(b_factura))
     if b_tira:
-        contenido.append(Image.open(io.BytesIO(b_tira)))
+        contenido.append(optimizar_imagen_ia(b_tira))
     for intento in range(3):
         try:
-            res = modelo.generate_content(contenido)
+            res = modelo.generate_content(contenido, request_options={"timeout": 90})
             return res.text
-        except exceptions.ResourceExhausted:
+        except (exceptions.ResourceExhausted, exceptions.DeadlineExceeded, exceptions.ServiceUnavailable, exceptions.InternalServerError):
             if intento < 2:
-                time.sleep(20)
+                time.sleep(8)
             else:
                 raise
 
@@ -143,13 +152,13 @@ if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_contain
             prompt = """Eres un auditor experto en estaciones de servicio en México (NOM-005-ASEA-2016).
 Extrae de la FACTURA y de la TIRA VEEDER-ROOT los siguientes datos exactos:
 1. FACTURA:
-- "factura": Folio de la factura (ej. "B4705", "B4709").
+- "factura": Folio de la factura (ej. "B4705", "B4727").
 - "uuid": Folio Fiscal UUID completo.
-- "litros_facturados": Cantidad numérica de LITROS facturados del combustible (ej. 43628.00; ignora importes en pesos). Si hay varios combustibles, toma el que coincida con la tira Veeder-Root o Regular/Magna. Prohibido devolver 0.
+- "litros_facturados": Cantidad numérica de LITROS facturados del combustible (ej. 43628.00; ignora importes en pesos). Prohibido devolver 0.
 - "embarque": Número de embarque (ej. "779274") o "S/D".
 - "tanque_at": Clave de autotanque/tonel (ej. "23UY9X") o "S/D".
 2. TIRA VEEDER-ROOT:
-- "litros_descargados": Valor numérico de la línea 'AUMENTO BRUTO' (ej. 'AUMENTO BRUTO = 43285' o '43342', sin importar si dice T1 o T2 o si lleva las letras CT). Prohibido devolver 0.
+- "litros_descargados": Valor numérico de la línea 'AUMENTO BRUTO' (ej. 'AUMENTO BRUTO = 43285' o '43342', sin importar si dice T1 o T2). Prohibido devolver 0.
 - "fecha": Fecha en formato DD/MM/AAAA (ej. 13-10-26 -> 13/10/2026).
 - "hora_inicio": Hora de INICIO AUMENTO (HH:MM).
 - "hora_termino": Hora de FIN AUMENTO (HH:MM).
@@ -164,9 +173,10 @@ Devuelve ÚNICAMENTE JSON válido:
                     raise ValueError(f"Respuesta sin JSON válido: {respuesta_texto}")
                 datos_ia = json.loads(match.group(0), strict=False)
 
+                uuid_local = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", texto_pdf or "")
                 factura_raw = str(datos_ia.get("factura", "SD")).strip().replace("\n", "") or "SD"
                 factura_num = re.sub(r'[\\/*?:"<>| ]', "_", factura_raw)
-                uuid = str(datos_ia.get("uuid", "SD")).strip().replace("\n", "")
+                uuid = str(datos_ia.get("uuid") or (uuid_local.group(0).upper() if uuid_local else "SD")).strip().replace("\n", "")
                 vol_facturado = limpiar_flotante(datos_ia.get("litros_facturados"), "litros_facturados")
                 vol_descargado = limpiar_flotante(datos_ia.get("litros_descargados"), "litros_descargados")
                 fecha_tira = str(datos_ia.get("fecha", "SD")).strip().replace("\n", "")
