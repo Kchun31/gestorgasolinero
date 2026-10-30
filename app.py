@@ -1,12 +1,10 @@
-import base64, io, json, os, re, time, requests
+import base64, io, os, re, requests
 from PIL import Image, ImageOps
 import PyPDF2
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Image as RLImage, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
 from streamlit_paste_button import paste_image_button
+from extractor import extraer_datos_factura_local, extraer_con_ia_ligera, normalizar_litros
+from pdf_engine import generar_pdf_recepcion
 
 st.set_page_config(page_title="Bitácoras CBA", page_icon="⛽", layout="centered")
 carpeta_destino = "temp_destino"
@@ -27,32 +25,25 @@ def guardar_folio(nuevo_folio):
     with open(ARCHIVO_FOLIO, "w") as f:
         f.write(str(nuevo_folio))
 
-def buscar_imagen(nombre_base):
-    for ext in ["png", "jpg", "jpeg", "PNG", "JPG"]:
-        if os.path.exists(f"{nombre_base}.{ext}"):
-            return f"{nombre_base}.{ext}"
-    return None
-
-def limpiar_flotante(valor, campo):
-    if valor is None or str(valor).strip() == "":
-        raise ValueError(f"El dato '{campo}' llegó vacío desde la IA.")
-    m = re.findall(r"[-+]?\d*\.?\d+", str(valor).replace(",", ""))
-    if not m:
-        raise ValueError(f"El dato '{campo}' no es numérico: '{valor}'")
-    num = float(m[0])
-    if 10.0 <= num <= 99.999 and "." in m[0] and len(m[0].split(".")[1]) == 3:
-        num *= 1000.0
-    return num
-
-def optimizar_imagen_b64(img_bytes):
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(img_bytes))).convert("RGB")
-    img.thumbnail((850, 850), Image.Resampling.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=72, optimize=True)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-if "folio_actual" not in st.session_state:
-    st.session_state.folio_actual = obtener_folio()
+defaults = {
+    "folio_actual": obtener_folio(),
+    "d_factura": "",
+    "d_uuid": "",
+    "d_producto": "REGULAR (MAGNA)",
+    "d_tanque_vr": "T1: MAGNA",
+    "d_litros_fac": 0.0,
+    "d_litros_desc": 0.0,
+    "d_fecha": "",
+    "d_hora_ini": "00:01",
+    "d_hora_fin": "00:47",
+    "d_embarque": "S/D",
+    "d_tanque_at": "S/D",
+    "d_operador": "Javier Arturo Garcia",
+    "ultimo_archivo_fac": ""
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 st.title("⛽ ERP | Recepción y Descargas")
 st.subheader("Combustibles Buenos Aires S.A. de C.V.")
@@ -63,17 +54,28 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("**1. Factura (PDF o Cámara)**")
     metodo_factura = st.radio("Método Factura:", ["Subir PDF/Imagen", "Usar Cámara"], horizontal=True, key="metodo_factura")
-    img_factura, factura_file, texto_pdf, bytes_factura, bytes_pdf_raw = None, None, "", None, None
+    img_factura, factura_file, texto_pdf, bytes_factura = None, None, "", None
 
     if metodo_factura == "Subir PDF/Imagen":
         factura_file = st.file_uploader("Sube archivo:", type=["pdf", "png", "jpg", "jpeg"], key="factura_up")
         if factura_file:
             if factura_file.type == "application/pdf":
                 try:
-                    bytes_pdf_raw = factura_file.getvalue()
-                    reader = PyPDF2.PdfReader(io.BytesIO(bytes_pdf_raw))
+                    reader = PyPDF2.PdfReader(io.BytesIO(factura_file.getvalue()))
                     for page in reader.pages:
                         texto_pdf += (page.extract_text() or "") + "\n"
+                    if st.session_state.ultimo_archivo_fac != factura_file.name:
+                        loc = extraer_datos_factura_local(texto_pdf, factura_file.name)
+                        st.session_state.d_factura = loc["factura"]
+                        st.session_state.d_uuid = loc["uuid"]
+                        st.session_state.d_producto = loc["producto"]
+                        st.session_state.d_tanque_vr = loc["tanque_vr"]
+                        if loc["litros_facturados"] > 0:
+                            st.session_state.d_litros_fac = loc["litros_facturados"]
+                        st.session_state.d_embarque = loc["embarque"]
+                        st.session_state.d_tanque_at = loc["tanque_at"]
+                        st.session_state.ultimo_archivo_fac = factura_file.name
+                    st.success("✅ Factura PDF leída localmente (0s).")
                 except Exception as e_pdf:
                     st.warning(f"Aviso lectura PDF: {e_pdf}")
             else:
@@ -107,211 +109,151 @@ with col2:
             tira_up = st.file_uploader("Sube la foto:", type=["jpg", "jpeg", "png"], key="galeria_veeder")
             if tira_up:
                 bytes_tira = tira_up.getvalue()
-                img_tira = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_tira)))
+                img_tira = ImageOps.exif_transpose(Image.open(io.BytesIO(tira_up)))
 
 folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, value=st.session_state.folio_actual, step=1)
+
+if st.button("🔍 Extraer / Autocompletar Tira Veeder-Root con IA", use_container_width=True):
+    if bytes_tira is None:
+        st.warning("Primero pega o sube la foto de la Tira Veeder-Root.")
+    else:
+        with st.spinner("Leyendo Tira Veeder-Root (Imagen comprimida ultraligera)..."):
+            api_key = st.secrets.get("GEMINI_API_KEY", "")
+            pedir_fac = (st.session_state.d_litros_fac <= 0) or (not st.session_state.d_uuid)
+            res_ia, err_ia = extraer_con_ia_ligera(bytes_tira, api_key, texto_pdf, bytes_factura, pedir_fac)
+            if res_ia:
+                if normalizar_litros(res_ia.get("litros_descargados")) > 0:
+                    st.session_state.d_litros_desc = normalizar_litros(res_ia.get("litros_descargados"))
+                if res_ia.get("fecha"):
+                    st.session_state.d_fecha = str(res_ia.get("fecha")).strip()
+                if res_ia.get("hora_inicio"):
+                    st.session_state.d_hora_ini = str(res_ia.get("hora_inicio")).strip()
+                if res_ia.get("hora_termino"):
+                    st.session_state.d_hora_fin = str(res_ia.get("hora_termino")).strip()
+                if res_ia.get("tanque_vr") in ["T1: MAGNA", "T2: DIÉSEL", "T3: PREMIUM"]:
+                    st.session_state.d_tanque_vr = res_ia.get("tanque_vr")
+                if pedir_fac:
+                    if not st.session_state.d_factura and res_ia.get("factura"):
+                        st.session_state.d_factura = str(res_ia.get("factura")).strip()
+                    if not st.session_state.d_uuid and res_ia.get("uuid"):
+                        st.session_state.d_uuid = str(res_ia.get("uuid")).strip()
+                    if st.session_state.d_litros_fac <= 0 and normalizar_litros(res_ia.get("litros_facturados")) > 0:
+                        st.session_state.d_litros_fac = normalizar_litros(res_ia.get("litros_facturados"))
+                st.success("✅ Datos de la tira extraídos en la Mesa de Control.")
+            else:
+                st.warning(f"⚠️ La IA demoró ({err_ia}). Captura o verifica los datos directamente abajo sin detener tu trabajo.")
+
+st.markdown("### 🛠️ Mesa de Control y Validación (NOM-005-ASEA-2016)")
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.session_state.d_factura = st.text_input("Folio Factura", value=st.session_state.d_factura)
+    st.session_state.d_litros_fac = st.number_input("Litros Facturados (L)", value=float(st.session_state.d_litros_fac), step=100.0, format="%.2f")
+    st.session_state.d_fecha = st.text_input("Fecha Descarga (DD/MM/AAAA)", value=st.session_state.d_fecha)
+with c2:
+    st.session_state.d_uuid = st.text_input("Folio Fiscal (UUID)", value=st.session_state.d_uuid)
+    st.session_state.d_litros_desc = st.number_input("Aumento Bruto Veeder-Root (L)", value=float(st.session_state.d_litros_desc), step=100.0, format="%.2f")
+    st.session_state.d_hora_ini = st.text_input("Hora Inicio (HH:MM)", value=st.session_state.d_hora_ini)
+with c3:
+    opciones_prod = ["REGULAR (MAGNA)", "DIÉSEL", "PREMIUM"]
+    idx_p = opciones_prod.index(st.session_state.d_producto) if st.session_state.d_producto in opciones_prod else 0
+    st.session_state.d_producto = st.selectbox("Producto", opciones_prod, index=idx_p)
+    opciones_tq = ["T1: MAGNA", "T2: DIÉSEL", "T3: PREMIUM"]
+    idx_t = opciones_tq.index(st.session_state.d_tanque_vr) if st.session_state.d_tanque_vr in opciones_tq else 0
+    st.session_state.d_tanque_vr = st.selectbox("Tanque Veeder-Root", opciones_tq, index=idx_t)
+    st.session_state.d_hora_fin = st.text_input("Hora Término (HH:MM)", value=st.session_state.d_hora_fin)
+
+c4, c5, c6 = st.columns(3)
+with c4:
+    st.session_state.d_embarque = st.text_input("Embarque", value=st.session_state.d_embarque)
+with c5:
+    st.session_state.d_tanque_at = st.text_input("Tanque Autotanque", value=st.session_state.d_tanque_at)
+with c6:
+    st.session_state.d_operador = st.text_input("Operador", value=st.session_state.d_operador)
+
+dif_litros = abs(st.session_state.d_litros_fac - st.session_state.d_litros_desc)
+pct_merma = (dif_litros / st.session_state.d_litros_fac * 100.0) if st.session_state.d_litros_fac > 0 else 0.0
+if st.session_state.d_litros_fac > 0 and st.session_state.d_litros_desc > 0:
+    if pct_merma <= 0.55:
+        st.success(f"🟢 SEMÁFORO NORMATIVO EN RANGO | Desviación: {dif_litros:,.2f} L ({pct_merma:.2f}%)")
+    else:
+        st.warning(f"🔴 ALERTA DE VARIACIÓN VOLUMÉTRICA | Desviación: {dif_litros:,.2f} L ({pct_merma:.2f}%)")
+
 st.markdown("---")
 
-@st.cache_data(show_spinner=False)
-def procesar_con_ia_seguro(prompt_texto, texto_extraido, b_factura, b_tira, api_key, pdf_raw=None):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key.strip()}"
-    parts = [{"text": prompt_texto}]
-    if texto_extraido and len(texto_extraido.strip()) > 30:
-        parts.append({"text": f"Texto extraído de la factura PDF:\n{texto_extraido}"})
-    elif pdf_raw:
-        parts.append({"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(pdf_raw).decode("utf-8")}})
-    if b_factura:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": optimizar_imagen_b64(b_factura)}})
-    if b_tira:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": optimizar_imagen_b64(b_tira)}})
-
-    payload = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}}
-    sesion = requests.Session()
-    ultimo_err = ""
-    for intento in range(3):
-        try:
-            r = sesion.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=(15, 120))
-            if r.status_code == 200:
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            elif r.status_code in (429, 500, 502, 503, 504):
-                ultimo_err = f"HTTP {r.status_code}: {r.text}"
-                time.sleep(6 * (intento + 1))
-            else:
-                raise RuntimeError(f"Error API ({r.status_code}): {r.text}")
-        except requests.exceptions.RequestException as e_req:
-            ultimo_err = str(e_req)
-            if intento < 2:
-                time.sleep(5)
-            else:
-                raise RuntimeError(f"Fallo de red tras 3 intentos de 120s: {ultimo_err}")
-    raise RuntimeError(ultimo_err)
-
 if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
-    if (not factura_file and img_factura is None) or img_tira is None:
-        st.error("Proporciona tanto la Factura como la Tira Veeder-Root para continuar.")
-    else:
-        with st.spinner("Analizando con precisión quirúrgica mediante IA..."):
-            api_key = st.secrets.get("GEMINI_API_KEY")
-            if not api_key:
-                st.error("❌ Llave GEMINI_API_KEY no encontrada en Secrets.")
+    if img_tira is None:
+        st.error("❌ Proporciona la imagen de la Tira Veeder-Root para el Anexo Fotográfico.")
+        st.stop()
+
+    if st.session_state.d_litros_desc <= 0 or not st.session_state.d_fecha:
+        with st.spinner("Extrayendo datos de la Tira Veeder-Root..."):
+            api_key = st.secrets.get("GEMINI_API_KEY", "")
+            pedir_fac = (st.session_state.d_litros_fac <= 0) or (not st.session_state.d_uuid)
+            res_ia, err_ia = extraer_con_ia_ligera(bytes_tira, api_key, texto_pdf, bytes_factura, pedir_fac)
+            if res_ia:
+                if st.session_state.d_litros_desc <= 0:
+                    st.session_state.d_litros_desc = normalizar_litros(res_ia.get("litros_descargados"))
+                if not st.session_state.d_fecha and res_ia.get("fecha"):
+                    st.session_state.d_fecha = str(res_ia.get("fecha")).strip()
+                if res_ia.get("hora_inicio"):
+                    st.session_state.d_hora_ini = str(res_ia.get("hora_inicio")).strip()
+                if res_ia.get("hora_termino"):
+                    st.session_state.d_hora_fin = str(res_ia.get("hora_termino")).strip()
+                if not st.session_state.d_factura and res_ia.get("factura"):
+                    st.session_state.d_factura = str(res_ia.get("factura")).strip()
+                if not st.session_state.d_uuid and res_ia.get("uuid"):
+                    st.session_state.d_uuid = str(res_ia.get("uuid")).strip()
+                if st.session_state.d_litros_fac <= 0:
+                    st.session_state.d_litros_fac = normalizar_litros(res_ia.get("litros_facturados"))
+            else:
+                st.error(f"⚠️ No se pudo leer el ticket por red ({err_ia}). Escribe el 'Aumento Bruto Veeder-Root' y 'Fecha' en la Mesa de Control arriba y vuelve a presionar este botón.")
                 st.stop()
 
-            prompt = """Eres un auditor experto en estaciones de servicio en México (NOM-005-ASEA-2016).
-Extrae de la FACTURA y de la TIRA VEEDER-ROOT los siguientes datos exactos:
-1. FACTURA:
-- "factura": Folio de la factura (ej. "B4705", "B4727").
-- "uuid": Folio Fiscal UUID completo.
-- "litros_facturados": Cantidad numérica de LITROS facturados del combustible (ej. 43628.00; ignora importes en pesos). Prohibido devolver 0.
-- "embarque": Número de embarque (ej. "779274") o "S/D".
-- "tanque_at": Clave de autotanque/tonel (ej. "23UY9X") o "S/D".
-2. TIRA VEEDER-ROOT:
-- "litros_descargados": Valor numérico de la línea 'AUMENTO BRUTO' (ej. 'AUMENTO BRUTO = 43285' o '43342', sin importar si dice T1 o T2). Prohibido devolver 0.
-- "fecha": Fecha en formato DD/MM/AAAA (ej. 13-10-26 -> 13/10/2026).
-- "hora_inicio": Hora de INICIO AUMENTO (HH:MM).
-- "hora_termino": Hora de FIN AUMENTO (HH:MM).
-Devuelve ÚNICAMENTE JSON válido:
-{"uuid": "...", "factura": "...", "litros_facturados": 0.0, "litros_descargados": 0.0, "fecha": "...", "hora_inicio": "...", "hora_termino": "...", "embarque": "...", "tanque_at": "..."}"""
+    factura_clean = re.sub(r'[\\/*?:"<>| ]', "_", st.session_state.d_factura.strip() or "SD")
+    folio_str = str(int(folio_input)).zfill(4)
+    nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_clean}.pdf"
+    ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
 
-            respuesta_texto = ""
-            try:
-                respuesta_texto = procesar_con_ia_seguro(prompt, texto_pdf, bytes_factura, bytes_tira, api_key, bytes_pdf_raw)
-                match = re.search(r"\{.*\}", respuesta_texto, re.DOTALL)
-                if not match:
-                    raise ValueError(f"Respuesta sin JSON válido: {respuesta_texto}")
-                datos_ia = json.loads(match.group(0), strict=False)
+    datos_pdf = {
+        "folio": int(folio_input),
+        "factura": st.session_state.d_factura.strip() or "SD",
+        "uuid": st.session_state.d_uuid.strip() or "SD",
+        "producto": st.session_state.d_producto,
+        "tanque_vr": st.session_state.d_tanque_vr,
+        "litros_facturados": st.session_state.d_litros_fac,
+        "litros_descargados": st.session_state.d_litros_desc,
+        "fecha": st.session_state.d_fecha.strip() or "SD",
+        "hora_inicio": st.session_state.d_hora_ini.strip() or "00:00",
+        "hora_termino": st.session_state.d_hora_fin.strip() or "00:00",
+        "embarque": st.session_state.d_embarque.strip() or "S/D",
+        "tanque_at": st.session_state.d_tanque_at.strip() or "S/D",
+        "operador": st.session_state.d_operador.strip() or "Javier Arturo Garcia"
+    }
 
-                uuid_local = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", texto_pdf or "")
-                factura_raw = str(datos_ia.get("factura", "SD")).strip().replace("\n", "") or "SD"
-                factura_num = re.sub(r'[\\/*?:"<>| ]', "_", factura_raw)
-                uuid = str(datos_ia.get("uuid") or (uuid_local.group(0).upper() if uuid_local else "SD")).strip().replace("\n", "")
-                vol_facturado = limpiar_flotante(datos_ia.get("litros_facturados"), "litros_facturados")
-                vol_descargado = limpiar_flotante(datos_ia.get("litros_descargados"), "litros_descargados")
-                fecha_tira = str(datos_ia.get("fecha", "SD")).strip().replace("\n", "")
-                hora_inicio = str(datos_ia.get("hora_inicio", "SD")).strip().replace("\n", "")
-                hora_termino = str(datos_ia.get("hora_termino", "SD")).strip().replace("\n", "")
-                embarque = str(datos_ia.get("embarque", "S/D")).strip().replace("\n", "") or "S/D"
-                tanque_at = str(datos_ia.get("tanque_at", "S/D")).strip().replace("\n", "") or "S/D"
-                desviacion = abs(vol_facturado - vol_descargado)
-            except Exception as e:
-                st.error(f"❌ Error IA / Validación de datos: {e}")
-                if respuesta_texto:
-                    st.code(respuesta_texto)
-                st.stop()
+    try:
+        generar_pdf_recepcion(datos_pdf, img_tira, ruta_pdf)
+        siguiente_folio = int(folio_input) + 1
+        guardar_folio(siguiente_folio)
+        st.session_state.folio_actual = siguiente_folio
+    except Exception as e_pdf:
+        st.error(f"❌ Error al construir el PDF: {e_pdf}")
+        st.stop()
 
-            try:
-                folio_str = str(int(folio_input)).zfill(4)
-                nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_num}.pdf"
-                ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
+    try:
+        url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
+        if url_script:
+            with open(ruta_pdf, "rb") as f:
+                pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+            res = requests.post(url_script.strip(), data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf}, timeout=45)
+            if any(w in res.text.lower() for w in ["éxito", "exito", "success"]):
+                st.success("✅ ¡Bitácora enviada y guardada en tu Google Drive!")
+                st.info(f"📌 Siguiente folio reservado: {siguiente_folio}")
+            else:
+                st.warning(f"⚠️ Respuesta Drive: {res.text}")
+        else:
+            st.warning("⚠️ Falta URL_GOOGLE_SCRIPT en Secrets.")
+    except Exception as e_net:
+        st.warning(f"⚠️ PDF creado, pero falló envío a Drive: {e_net}")
 
-                doc = SimpleDocTemplate(ruta_pdf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=25, bottomMargin=25)
-                elementos, styles = [], getSampleStyleSheet()
-                c_rojo, c_rosa, c_gris = colors.HexColor("#a81c1c"), colors.HexColor("#f9ebea"), colors.HexColor("#f2f2f2")
-
-                s_der = ParagraphStyle("Der", fontName="Helvetica", fontSize=7.5, leading=10, alignment=2)
-                s_sas = ParagraphStyle("Sas", fontName="Helvetica-Bold", fontSize=8.5, leading=11, alignment=1, textColor=colors.white)
-                s_bit = ParagraphStyle("Bit", fontName="Helvetica-Bold", fontSize=8.5, leading=11, alignment=1, textColor=c_rojo)
-                s_lbl = ParagraphStyle("Lbl", fontName="Helvetica-Bold", fontSize=6.8, leading=8.8)
-                s_cel = ParagraphStyle("Cel", fontName="Helvetica", fontSize=6.8, leading=8.8)
-                s_ctr = ParagraphStyle("Ctr", fontName="Helvetica-Bold", fontSize=7.0, leading=9.0, alignment=1)
-                s_thc = ParagraphStyle("Thc", fontName="Helvetica-Bold", fontSize=6.8, leading=8.8, alignment=1, textColor=colors.white)
-                s_fnm = ParagraphStyle("Fnm", fontName="Helvetica-Bold", fontSize=7.5, leading=9.5, alignment=1)
-                s_fcg = ParagraphStyle("Fcg", fontName="Helvetica", fontSize=6.5, leading=8.5, alignment=1, textColor=colors.HexColor("#444444"))
-
-                def P(txt, st_p=s_cel):
-                    return Paragraph(str(txt), st_p)
-
-                logo_p = buscar_imagen("logo_teika") or buscar_imagen("cabecera")
-                logo1 = RLImage(logo_p, width=95, height=42) if logo_p else P("<b>[Logo]</b>")
-                logo2 = RLImage(logo_p, width=95, height=42) if logo_p else P("<b>[Logo]</b>")
-
-                dir_txt = "<font size=10><b>COMBUSTIBLES BUENOS AIRES S.A. DE C.V.</b></font><br/>CAMPO 4 SN, COLONIA BUENOS AIRES, JANOS, CHIHUAHUA. C.P. 31844."
-                estilo_cab = TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (1,0), (1,0), 'RIGHT'), ('LINEBELOW', (0,0), (-1,-1), 1.5, c_rojo), ('BOTTOMPADDING', (0,0), (-1,-1), 6)])
-
-                t_cab1 = Table([[logo1, P(dir_txt, s_der)]], colWidths=[110, 442])
-                t_cab1.setStyle(estilo_cab)
-                elementos.extend([t_cab1, Spacer(1, 8)])
-
-                t_tit = Table([[P("SISTEMA DE ADMINISTRACIÓN (SASISOPA) NOM-005-ASEA-2016", s_sas)], [P(f"BITÁCORA OFICIAL DE RECEPCIÓN, DESCARGA Y CONTROL VEEDER-ROOT | FOLIO: {folio_str}", s_bit)]], colWidths=[552])
-                t_tit.setStyle(TableStyle([('BACKGROUND', (0,0), (0,0), c_rojo), ('BACKGROUND', (0,1), (0,1), c_rosa), ('BOX', (0,0), (-1,-1), 1, c_rojo), ('TOPPADDING', (0,0), (-1,-1), 4), ('BOTTOMPADDING', (0,0), (-1,-1), 4)]))
-                elementos.extend([t_tit, Spacer(1, 6)])
-
-                aut_txt = f"Emb: {embarque} | Tq: {tanque_at} | Op: Javier Arturo Garcia"
-                t_info = Table([
-                    [P("FACTURA:", s_lbl), P(f"<b>{factura_raw}</b>"), P("RFC ESTACIÓN:", s_lbl), P("CBA140131V12")],
-                    [P("PERMISO CRE:", s_lbl), P("PL/3910/EXP/ES/2015"), P("FOLIO FISCAL:", s_lbl), P(uuid)],
-                    [P("PRODUCTO:", s_lbl), P(f"<b>REGULAR (MAGNA) ({vol_facturado:,.2f} L)</b>"), P("PROVEEDOR:", s_lbl), P("UNEGAS DISTRIBUCION (UDA171106KV9)")],
-                    [P("AUTOTANQUE:", s_lbl), P(aut_txt), P("DESTINO:", s_lbl), P("Combustibles Buenos Aires")],
-                    [P("FECHA DESCARGA:", s_lbl), P(fecha_tira), P("HORARIO (INICIO - FIN):", s_lbl), P(f"{hora_inicio} a {hora_termino}")]
-                ], colWidths=[95, 181, 105, 171])
-                t_info.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('BACKGROUND', (0,0), (0,-1), c_gris), ('BACKGROUND', (2,0), (2,-1), c_gris), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('PADDING', (0,0), (-1,-1), 4)]))
-                elementos.extend([t_info, Spacer(1, 8)])
-
-                reg_vr = f"• Verificación de descarga autorizada.<br/>• <b>Aumento Bruto CT: {vol_descargado:,.2f} L</b>"
-                est_vr = f"Facturado: {vol_facturado:,.2f} L<br/>Descargado (Bruto): {vol_descargado:,.2f} L<br/><b>Desviación (Dif): {desviacion:,.2f} L</b>"
-                t_ctrl = Table([
-                    [P("PARAMETRO/CONTROL", s_thc), P("REGISTRO Y VALIDACIÓN VEEDER-ROOT (T1: MAGNA)", s_thc), P("CUMPLE SASISOPA", s_thc), P("ESTATUS/VALORES", s_thc)],
-                    [P("CONTROL VEEDER-ROOT", s_lbl), P(reg_vr), P("[X] SÍ   [ ] NO", s_ctr), P(est_vr)]
-                ], colWidths=[105, 212, 90, 145])
-                t_ctrl.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), c_rojo), ('BACKGROUND', (0,1), (0,1), c_gris), ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('PADDING', (0,0), (-1,-1), 5)]))
-                elementos.extend([t_ctrl, Spacer(1, 8)])
-
-                obs_txt = f"<b>OBSERVACIONES/ACCIONES:</b><br/>Recepción amparada con Factura {factura_raw}. Aumento Bruto validado mediante registro fotográfico en Anexo 2."
-                t_obs = Table([[P(obs_txt)]], colWidths=[552])
-                t_obs.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#f9f9f9")), ('BOX', (0,0), (-1,-1), 0.5, colors.black), ('PADDING', (0,0), (-1,-1), 6)]))
-                elementos.extend([t_obs, Spacer(1, 35)])
-
-                sj, sy = buscar_imagen("firma_javier"), buscar_imagen("firma_yahir")
-                cj = RLImage(sj, width=115, height=42) if sj else P("[Firma Javier]", s_ctr)
-                cy = RLImage(sy, width=115, height=42) if sy else P("[Firma Yahir]", s_ctr)
-                t_fir = Table([
-                    [cj, "", cy],
-                    [P("Javier Arturo Garcia Venegas", s_fnm), "", P("Yahir Caro Martinez", s_fnm)],
-                    [P("Operador/Encargado de Descarga (Realizó)", s_fcg), "", P("Representante Técnico/Administrador (Autorizó)", s_fcg)]
-                ], colWidths=[230, 92, 230])
-                t_fir.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'BOTTOM'), ('LINEABOVE', (0,1), (0,1), 0.7, colors.black), ('LINEABOVE', (2,1), (2,1), 0.7, colors.black)]))
-                elementos.extend([t_fir, PageBreak()])
-
-                t_cab2 = Table([[logo2, P("<b>Auditoría Documental:</b><br/>" + dir_txt, s_der)]], colWidths=[110, 442])
-                t_cab2.setStyle(estilo_cab)
-                t_anx = Table([[P("ANEXO DE EVIDENCIA: LECTURA VISUAL DE TIRA VEEDER-ROOT", s_bit)]], colWidths=[552])
-                t_anx.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), c_rosa), ('BOX', (0,0), (-1,-1), 1, c_rojo), ('PADDING', (0,0), (-1,-1), 4)]))
-                elementos.extend([t_cab2, Spacer(1, 8), t_anx, Spacer(1, 10)])
-
-                temp_img_path = "temp_veeder.png"
-                img_tira.convert("RGB").save(temp_img_path, format="PNG")
-                img_vr = RLImage(temp_img_path, width=250, height=390)
-                t_img = Table([[img_vr]], colWidths=[552])
-                t_img.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")), ('PADDING', (0,0), (-1,-1), 8)]))
-
-                res_p2 = f"• <b>Factura:</b> {factura_raw} | <b>Litros Facturados:</b> {vol_facturado:,.2f} L<br/>• <b>Litros Descargados (Bruto):</b> {vol_descargado:,.2f} L | <b>Desviación (Dif):</b> {desviacion:,.2f} L"
-                t_res = Table([[P(res_p2)]], colWidths=[552])
-                t_res.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), c_gris), ('BOX', (0,0), (-1,-1), 0.5, colors.black), ('PADDING', (0,0), (-1,-1), 6)]))
-                elementos.extend([t_img, Spacer(1, 10), t_res])
-
-                doc.build(elementos)
-                siguiente_folio = int(folio_input) + 1
-                guardar_folio(siguiente_folio)
-                st.session_state.folio_actual = siguiente_folio
-            except Exception as e_pdf:
-                st.error(f"❌ Error al construir el PDF: {e_pdf}")
-                st.stop()
-
-            try:
-                url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
-                if url_script:
-                    with open(ruta_pdf, "rb") as f:
-                        pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
-                    res = requests.post(url_script.strip(), data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf}, timeout=45)
-                    if any(w in res.text.lower() for w in ["éxito", "exito", "success"]):
-                        st.success("✅ ¡Bitácora enviada y guardada en tu Google Drive!")
-                        st.info(f"📌 Siguiente folio reservado: {siguiente_folio}")
-                    else:
-                        st.warning(f"⚠️ Respuesta Drive: {res.text}")
-                else:
-                    st.warning("⚠️ Falta URL_GOOGLE_SCRIPT en Secrets.")
-            except Exception as e_net:
-                st.warning(f"⚠️ PDF creado, pero falló envío a Drive: {e_net}")
-
-            with open(ruta_pdf, "rb") as pdf_file:
-                st.download_button(label="📥 Descargar Copia", data=pdf_file.read(), file_name=nombre_archivo_pdf, mime="application/pdf", use_container_width=True)
-# === FIN DEL ARCHIVO ===
+    with open(ruta_pdf, "rb") as pdf_file:
+        st.download_button(label="📥 Descargar Copia", data=pdf_file.read(), file_name=nombre_archivo_pdf, mime="application/pdf", use_container_width=True)
