@@ -5,3 +5,4 @@ reportlab
 Pillow
 streamlit-paste-button
 requests
+pytesseract
