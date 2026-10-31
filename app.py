@@ -2,7 +2,7 @@ import streamlit as st
 from app_estado import iniciar_estado
 from app_factura import render_factura
 from app_ticket import render_ticket
-from app_mesa import render_mesa, validar_mesa
+from app_mesa import render_mesa, validar_captura
 from app_envio import procesar_y_subir
 from app_mtto import render_modulo_mantenimiento
 
@@ -29,17 +29,14 @@ if modulo.startswith("⛽"):
     with col2:
         img_tira = render_ticket()
 
-    folio_input = st.number_input(
-        "📌 Número de Folio Consecutivo",
-        min_value=1,
-        value=st.session_state.folio_actual,
-        step=1,
-    )
-    confirmado = render_mesa()
+    folio_input = render_mesa()
     st.markdown("---")
 
     if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
-        errores = validar_mesa(img_tira, confirmado)
+        if img_tira is None:
+            st.error("❌ Primero pega la imagen de la Tira Veeder-Root con el botón rojo arriba.")
+            st.stop()
+        errores = validar_captura()
         if errores:
             for e in errores:
                 st.error(f"❌ {e}")
