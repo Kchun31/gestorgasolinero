@@ -1,5 +1,7 @@
-import calendar, io, os, re, zipfile
+import base64, calendar, io, json, os, re, zipfile
+from datetime import datetime, timedelta, timezone
 import pandas as pd
+import requests
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
@@ -9,6 +11,24 @@ MESES_MAP = {
     "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4, "MAYO": 5, "JUNIO": 6,
     "JULIO": 7, "AGOSTO": 8, "SEPTIEMBRE": 9, "OCTUBRE": 10, "NOVIEMBRE": 11, "DICIEMBRE": 12
 }
+ARCHIVO_PLAN_GUARDADO = "plan_mtto_activo.xlsx"
+ARCHIVO_ESTADO_MTTO = "estado_folios_mtto.json"
+
+def fecha_hoy_chihuahua():
+    return datetime.now(timezone(timedelta(hours=-6))).date()
+
+def cargar_folios_mtto():
+    if os.path.exists(ARCHIVO_ESTADO_MTTO):
+        try:
+            with open(ARCHIVO_ESTADO_MTTO, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"folio_mtto": 1001, "folio_limp": 5001}
+
+def guardar_folios_mtto(f_mtto, f_limp):
+    with open(ARCHIVO_ESTADO_MTTO, "w") as f:
+        json.dump({"folio_mtto": int(f_mtto), "folio_limp": int(f_limp)}, f)
 
 def buscar_imagen(nombres_base):
     if isinstance(nombres_base, str):
@@ -207,62 +227,85 @@ def crear_pdf_bitacora_mtto(datos):
     doc.build(elementos)
     return buf.getvalue()
 
-def generar_zip_mantenimiento(actividades, mes_num, mes_nombre, anio, folio_mtto_ini=1001, folio_limp_ini=5001, incluir_limpieza_diaria=True):
+def armar_datos_limpieza(folio, dia, mes_num, anio):
+    return {
+        "folio": folio,
+        "titulo": "BITÁCORA OFICIAL DE LIMPIEZA E INSPECCIÓN DIARIA DE ELEMENTOS CONSTRUCTIVOS",
+        "fecha": f"{dia:02d}/{mes_num:02d}/{anio}",
+        "horario": "08:00 a 09:00 hrs",
+        "area": "Elementos Constructivos, Islas, Edificios y Áreas Operativas",
+        "elemento": "8.18 / 8.19 LIMPIEZA GENERAL DE INSTALACIONES Y ELEMENTOS CONSTRUCTIVOS",
+        "criterio": "Mantener las áreas operativas, pisos, edificios, canaletas, islas y registros limpios, libres de derrames, maleza o residuos peligrosos.",
+        "periodicidad": "Diaria (Cada 24 Horas)",
+        "tipo_mtto": "Limpieza e Inspección Diaria",
+        "observaciones": (
+            "Limpieza general e inspección física diaria de elementos constructivos, áreas operativas, "
+            "islas de despacho, dispensarios, edificios, pisos, drenajes y sanitarios realizada conforme "
+            "a la NOM-005-ASEA-2016. Áreas libres de maleza, derrames y obstrucciones. Sin condiciones inseguras reportadas."
+        ),
+    }
+
+def armar_datos_mtto(folio, act):
+    return {
+        "folio": folio,
+        "titulo": "BITÁCORA OFICIAL DE MANTENIMIENTO PREVENTIVO E INSPECCIÓN",
+        "fecha": act["fecha"],
+        "horario": "09:00 a 10:00 hrs",
+        "area": act["area"],
+        "elemento": act["elemento"],
+        "criterio": act["criterio"],
+        "periodicidad": act["periodicidad"],
+        "tipo_mtto": "Preventivo Programado (■)",
+        "observaciones": (
+            f"Mantenimiento preventivo programado y revisión física de {act['area']} ({act['elemento']}) "
+            f"realizada conforme al programa mensual y a la NOM-005-ASEA-2016. "
+            f"Equipo e instalaciones operando en condiciones seguras, limpias y sin fugas."
+        ),
+    }
+
+def generar_zip_mantenimiento(actividades, mes_num, mes_nombre, anio, folio_mtto_ini=1001, folio_limp_ini=5001, incluir_limpieza_diaria=True, dia_inicio=1, dia_corte=31):
     zip_buf = io.BytesIO()
     f_mtto = int(folio_mtto_ini)
     f_limp = int(folio_limp_ini)
     carpeta_raiz = f"Bitacoras_{mes_nombre.capitalize()}_{anio}"
+    _, max_dias_mes = calendar.monthrange(int(anio), int(mes_num))
+    d_ini = max(1, int(dia_inicio))
+    d_fin = min(max_dias_mes, int(dia_corte))
+    archivos_creados = []
 
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for act in actividades:
-            obs = (
-                f"Mantenimiento preventivo programado y revisión física de {act['area']} ({act['elemento']}) "
-                f"realizada conforme al programa mensual y a la NOM-005-ASEA-2016. "
-                f"Equipo e instalaciones operando en condiciones seguras, limpias y sin fugas."
-            )
-            datos_pdf = {
-                "folio": f_mtto,
-                "titulo": "BITÁCORA OFICIAL DE MANTENIMIENTO PREVENTIVO E INSPECCIÓN",
-                "fecha": act["fecha"],
-                "horario": "09:00 a 10:00 hrs",
-                "area": act["area"],
-                "elemento": act["elemento"],
-                "criterio": act["criterio"],
-                "periodicidad": act["periodicidad"],
-                "tipo_mtto": "Preventivo Programado (■)",
-                "observaciones": obs,
-            }
-            pdf_bytes = crear_pdf_bitacora_mtto(datos_pdf)
+            if not (d_ini <= act["dia"] <= d_fin):
+                continue
+            pdf_bytes = crear_pdf_bitacora_mtto(armar_datos_mtto(f_mtto, act))
             sub_area = limpiar_nombre(act["area"])
             elem_clean = limpiar_nombre(act["elemento"])
             nombre_pdf = f"Folio_{f_mtto:04d}_Dia_{act['dia']:02d}_{elem_clean}.pdf"
             zf.writestr(f"{carpeta_raiz}/01_Mantenimiento_Programado/{sub_area}/{nombre_pdf}", pdf_bytes)
+            archivos_creados.append((nombre_pdf, pdf_bytes))
             f_mtto += 1
 
         if incluir_limpieza_diaria:
-            _, total_dias = calendar.monthrange(int(anio), int(mes_num))
-            for dia in range(1, total_dias + 1):
-                fecha_d = f"{dia:02d}/{mes_num:02d}/{anio}"
-                obs_l = (
-                    "Limpieza general e inspección física diaria de elementos constructivos, áreas operativas, "
-                    "islas de despacho, dispensarios, edificios, pisos, drenajes y sanitarios realizada conforme "
-                    "a la NOM-005-ASEA-2016. Áreas libres de maleza, derrames y obstrucciones. Sin condiciones inseguras reportadas."
-                )
-                datos_limp = {
-                    "folio": f_limp,
-                    "titulo": "BITÁCORA OFICIAL DE LIMPIEZA E INSPECCIÓN DIARIA DE ELEMENTOS CONSTRUCTIVOS",
-                    "fecha": fecha_d,
-                    "horario": "08:00 a 09:00 hrs",
-                    "area": "Elementos Constructivos, Islas, Edificios y Áreas Operativas",
-                    "elemento": "8.18 / 8.19 LIMPIEZA GENERAL DE INSTALACIONES Y ELEMENTOS CONSTRUCTIVOS",
-                    "criterio": "Mantener las áreas operativas, pisos, edificios, canaletas, islas y registros limpios, libres de derrames, maleza o residuos peligrosos.",
-                    "periodicidad": "Diaria (Cada 24 Horas)",
-                    "tipo_mtto": "Limpieza e Inspección Diaria",
-                    "observaciones": obs_l,
-                }
-                pdf_limp = crear_pdf_bitacora_mtto(datos_limp)
+            for dia in range(d_ini, d_fin + 1):
+                pdf_limp = crear_pdf_bitacora_mtto(armar_datos_limpieza(f_limp, dia, mes_num, anio))
                 nombre_l = f"Folio_{f_limp:04d}_{anio}-{mes_num:02d}-{dia:02d}_Limpieza_Diaria.pdf"
                 zf.writestr(f"{carpeta_raiz}/02_Limpieza_Diaria_Elementos_Constructivos/{nombre_l}", pdf_limp)
+                archivos_creados.append((nombre_l, pdf_limp))
                 f_limp += 1
 
-    return zip_buf.getvalue(), f_mtto, f_limp
+    guardar_folios_mtto(f_mtto, f_limp)
+    return zip_buf.getvalue(), f_mtto, f_limp, archivos_creados
+
+def enviar_lote_drive(archivos_creados, url_script):
+    if not url_script:
+        return 0, "Falta URL_GOOGLE_SCRIPT en Secrets."
+    enviados = 0
+    for nombre_pdf, pdf_bytes in archivos_creados:
+        try:
+            pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+            res = requests.post(url_script.strip(), data={"archivoB64": pdf_b64, "nombreArchivo": nombre_pdf}, timeout=30)
+            if any(w in res.text.lower() for w in ["éxito", "exito", "success"]):
+                enviados += 1
+        except Exception:
+            pass
+    return enviados, f"{enviados}/{len(archivos_creados)} enviados a Google Drive."
