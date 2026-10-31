@@ -14,6 +14,8 @@ def buscar_imagen(nombres_base):
     if isinstance(nombres_base, str):
         nombres_base = [nombres_base]
     for base in nombres_base:
+        if os.path.exists(base):
+            return base
         for ext in ["png", "jpg", "jpeg", "PNG", "JPG"]:
             ruta = f"{base}.{ext}"
             if os.path.exists(ruta):
@@ -185,8 +187,8 @@ def crear_pdf_bitacora_mtto(datos):
     ]))
     elementos.extend([t_obs, Spacer(1, 35)])
 
-    f_salv = buscar_imagen(["firma_salvador", "salvador", "firma_javier"])
-    f_jes = buscar_imagen(["firma_jesus", "jesus", "firma_yahir"])
+    f_salv = buscar_imagen(["firma_salvador.png", "firma_salvador"])
+    f_jes = buscar_imagen(["firma_jesus negro.png", "firma_jesus negro", "firma_jesus.png", "firma_jesus"])
     img_salv = RLImage(f_salv, width=110, height=42) if f_salv else P("<i>[Firma Salvador Delgado]</i>", s_ctr)
     img_jes = RLImage(f_jes, width=165, height=68) if f_jes else P("<b>[Firma Jesús Carbajal]</b>", s_ctr)
 
