@@ -1,22 +1,25 @@
+import os
 import re
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from ticket_imagen import (
-    pytesseract, UMBRALES, _abrir, _girar, _palabras, _localizar,
-    _caja_vol, _caja_fecha, _ocr_recorte, _ocr_pagina,
+    pytesseract, ANGULOS_PAGINA, UMBRALES_RECORTE, WL_NUM, WL_FECHA,
+    abrir, preparar_pagina, lineas_pagina, texto_lineas, ocr_recorte,
+)
+from ticket_parse import (
+    LITROS_MIN, LITROS_MAX, RE_VOL, RE_BRUTO,
+    numeros, fechahoras, par_de_texto, producto_ticket, puntuar,
+    localizar, moda, mejor_triple, _linea_con,
 )
 
 FORMATO_FECHA = "%d/%m/%Y"
-ANGULOS = (0, 2, -2)
 TOLERANCIA_REF = 0.08
-LITROS_MIN, LITROS_MAX = 500.0, 65000.0
-RE_FECHAHORA = re.compile(
-    r"(\d{2})\s*[-/.]\s*(\d{2})\s*[-/.]\s*(\d{2,4})\s+(\d{1,2})\s*[:.;]\s*(\d{2})"
-)
-RE_TANQUE = re.compile(r"\bT\s*([1-9])\s*[:.°;]?\s*(MAG|DIE|PRE|REG)", re.IGNORECASE)
-PRODUCTOS = {"MAG": "MAGNA", "REG": "MAGNA", "DIE": "DIÉSEL", "PRE": "PREMIUM"}
+NUCLEOS = max(1, min(4, os.cpu_count() or 2))
+SCORE_MIN = 3
+VARIANTES_RECORTE = 2
+MIN_VOTOS = 2
+CLAVES = ("vi", "vf", "br", "di", "hi", "df", "hf", "tq")
 
 
 def _vacio():
@@ -31,32 +34,69 @@ def _vacio():
     }
 
 
-def _parsear_fechahora(texto):
-    salida = []
-    for m in RE_FECHAHORA.finditer(texto):
-        d, mes, a, h, mi = (int(x) for x in m.groups())
-        a = a + 2000 if a < 100 else a
-        try:
-            datetime(a, mes, d, h, mi)
-        except ValueError:
+def _variante(base, ang):
+    g, bn = preparar_pagina(base, ang)
+    lineas = lineas_pagina(bn)
+    return {"ang": ang, "g": g, "lineas": lineas, "score": puntuar(lineas)}
+
+
+def _voto_fecha(v, dt, quien):
+    v["d" + quien].append(dt.strftime("%Y-%m-%d"))
+    v["h" + quien].append(dt.strftime("%H:%M"))
+
+
+def _votos_pagina(variantes):
+    v = {k: [] for k in CLAVES}
+    for var in variantes:
+        if var["score"] < SCORE_MIN:
             continue
-        salida.append((f"{a:04d}-{mes:02d}-{d:02d}", f"{h:02d}:{mi:02d}"))
-    return salida
+        lineas = var["lineas"]
+        vol = _linea_con(lineas, RE_VOL)
+        if len(vol) >= 2:
+            for clave, l in (("vi", vol[0]), ("vf", vol[-1])):
+                n = numeros(" ".join(w[0] for w in l))
+                if n:
+                    v[clave].append(n[0])
+        for l in _linea_con(lineas, RE_BRUTO)[-1:]:
+            n = numeros(" ".join(w[0] for w in l))
+            if n:
+                v["br"].append(n[-1])
+        par = par_de_texto(texto_lineas(lineas))
+        if par:
+            _voto_fecha(v, par[0], "i")
+            _voto_fecha(v, par[1], "f")
+        tq = producto_ticket(lineas)
+        if tq:
+            v["tq"].append(tq)
+    return v
 
 
-def _moda(valores, absorber=False):
-    if not valores:
-        return None, 0, 0
-    cuenta = Counter(valores)
-    if absorber:
-        puntos = dict(cuenta)
-        for corto in list(cuenta):
-            largos = [l for l in cuenta if len(str(l)) > len(str(corto)) and str(l).startswith(str(corto))]
-            if largos:
-                puntos[max(largos, key=lambda l: cuenta[l])] += cuenta[corto]
-        cuenta = Counter(puntos)
-    v, n = cuenta.most_common(1)[0]
-    return v, min(n, len(valores)), len(valores)
+def _trabajos_recorte(variantes):
+    trabajos = []
+    buenas = [x for x in sorted(variantes, key=lambda x: -x["score"]) if x["score"] >= SCORE_MIN]
+    for var in buenas[:VARIANTES_RECORTE]:
+        for clave, caja in localizar(var["lineas"]).items():
+            es_fecha = clave in ("fi", "ff")
+            lista = WL_FECHA if es_fecha else WL_NUM
+            angs = (0,) if es_fecha else (0, 1.5, -1.5)
+            for th in UMBRALES_RECORTE:
+                for esc in (2, 3):
+                    for a in angs:
+                        trabajos.append((clave, (var["g"], caja, th, esc, lista, 7, a)))
+    return trabajos
+
+
+def _votos_recorte(ex, trabajos, v):
+    textos = list(ex.map(lambda t: ocr_recorte(t[1]), trabajos))
+    for (clave, _), t in zip(trabajos, textos):
+        if clave in ("vi", "vf", "br"):
+            grupos = re.findall(r"\d{4,6}", t)
+            if grupos:
+                v[clave].append(int(grupos[0]))
+        else:
+            dts = fechahoras(t)
+            if dts:
+                _voto_fecha(v, dts[0], "i" if clave == "fi" else "f")
 
 
 def extraer_tira_ocr_local(img_bytes, litros_ref=0.0):
@@ -65,97 +105,68 @@ def extraer_tira_ocr_local(img_bytes, litros_ref=0.0):
         r["alertas"].append("pytesseract no está instalado; capture los datos en la Mesa de Control.")
         return r
     try:
-        base = _abrir(img_bytes)
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            giradas = [(a, _girar(base, a)) for a in ANGULOS]
-            locs = list(ex.map(lambda t: _localizar(_palabras(t[1])), giradas))
-            k = max(range(len(locs)), key=lambda i: locs[i]["score"])
-            im, loc = giradas[k][1], locs[k]
-            textos = list(ex.map(_ocr_pagina, [(im, th) for th in (120, 140, 160)]))
-            jobs = {"vi": [], "vf": [], "fi": [], "ff": []}
-            if loc["vol"]:
-                jobs["vi"] = _caja_vol(loc["vol"][0], loc["pal"])
-                jobs["vf"] = _caja_vol(loc["vol"][1], loc["pal"])
-            for clave, p in (("fi", loc["ini"]), ("ff", loc["fin"])):
-                jobs[clave] = _caja_fecha(p) if p else None
-            lectura = {}
-            for clave, caja in jobs.items():
-                if not caja:
-                    lectura[clave] = []
-                    continue
-                lista = "0123456789" if clave in ("vi", "vf") else "0123456789-: "
-                angs = (0, 1, 2) if clave in ("vi", "vf") else (0,)
-                args = [(im, caja, th, esc, lista, psm, a)
-                        for th in UMBRALES for esc in (2, 3) for psm in (7, 8) for a in angs]
-                lectura[clave] = list(ex.map(_ocr_recorte, args))
-
-        def numeros(clave):
-            vals = [re.sub(r"\D", "", t) for t in lectura.get(clave, [])]
-            return [int(v) for v in vals if 4 <= len(v) <= 6]
-
-        vi, n_vi, t_vi = _moda(numeros("vi"), True)
-        vf, n_vf, t_vf = _moda(numeros("vf"), True)
-        if vi is None or vf is None:
-            vi2 = re.findall(r"VOLUMEN\D{0,8}(\d{4,6})", " ".join(textos).upper())
-            if len(vi2) >= 2 and vi is None and vf is None:
-                vi, vf, n_vi, n_vf, t_vi, t_vf = int(vi2[0]), int(vi2[-1]), 1, 1, 3, 3
-                r["alertas"].append("Volúmenes leídos de texto completo (baja precisión).")
-        bruto = float(vf - vi) if vi is not None and vf is not None and vf > vi else 0.0
-        if bruto and not (LITROS_MIN <= bruto <= LITROS_MAX):
-            r["alertas"].append(f"Aumento Bruto fuera de rango ({bruto:.0f} L); verifique.")
-            bruto = 0.0
-        if bruto:
-            r["litros_descargados"] = round(bruto, 2)
-            if min(n_vi / t_vi, n_vf / t_vf) < 0.5:
-                r["alertas"].append("Dígitos de volumen poco concluyentes; verifique el Aumento Bruto.")
-            if litros_ref and abs(bruto - litros_ref) / litros_ref > TOLERANCIA_REF:
-                r["alertas"].append("El Aumento Bruto difiere más de 8% de los litros facturados.")
-        else:
-            r["alertas"].append("No se pudo calcular el Aumento Bruto; capturarlo en la Mesa de Control.")
-
-        votos_i, votos_f = [], []
-        for t in lectura.get("fi", []):
-            votos_i += _parsear_fechahora(t)[:1]
-        for t in lectura.get("ff", []):
-            votos_f += _parsear_fechahora(t)[:1]
-        for tx in textos:
-            enc = _parsear_fechahora(tx)
-            if len(enc) >= 2:
-                votos_i.append(enc[0])
-                votos_f.append(enc[-1])
-        mi, n_i, t_i = _moda(votos_i)
-        mf, n_f, t_f = _moda(votos_f)
-        di, hi = mi if mi else ("", "")
-        df, hf = mf if mf else ("", "")
-        if di and hi:
-            r["fecha"] = datetime.strptime(di, "%Y-%m-%d").strftime(FORMATO_FECHA)
-            r["hora_inicio"] = hi
-        else:
-            r["alertas"].append("No se leyeron fecha/hora de inicio.")
-        if df and hf:
-            r["hora_termino"] = hf
-            if di and (df, hf) < (di, hi):
-                r["alertas"].append("La hora de término es anterior al inicio; verifique.")
-        else:
-            r["alertas"].append("No se leyó la hora de término.")
-
-        for tx in textos:
-            m = RE_TANQUE.search(tx)
-            if m:
-                r["tanque_vr"] = f"T{m.group(1)}: {PRODUCTOS[m.group(2).upper()[:3]]}"
-                break
-
-        fuertes = (
-            t_vi and n_vi / t_vi >= 0.4 and t_vf and n_vf / t_vf >= 0.4
-            and n_i >= 2 and n_f >= 2
-        ) if (vi and vf and votos_i and votos_f) else False
-        if bruto and r["fecha"] and r["hora_inicio"] and r["hora_termino"]:
-            r["confianza"] = "alta" if fuertes and not r["alertas"] else "media"
-        else:
-            r["confianza"] = "baja"
-        if r["confianza"] != "alta":
-            r["alertas"].append("Confirme los datos del ticket en la Mesa de Control antes de generar el PDF.")
+        base = abrir(img_bytes)
+        with ThreadPoolExecutor(max_workers=NUCLEOS) as ex:
+            variantes = list(ex.map(lambda a: _variante(base, a), ANGULOS_PAGINA))
+            v = _votos_pagina(variantes)
+            _votos_recorte(ex, _trabajos_recorte(variantes), v)
+        _resolver(r, v, litros_ref)
     except Exception as e:
-        r["alertas"].append(f"Fallo el OCR local ({type(e).__name__}); use la Mesa de Control.")
+        r["alertas"].append(f"Falló el OCR local ({type(e).__name__}); use la Mesa de Control.")
         r["confianza"] = "nula"
     return r
+
+
+def _resolver_bruto(r, v):
+    tri = mejor_triple(v["vi"], v["vf"], v["br"])
+    if tri and tri[0][0] >= MIN_VOTOS:
+        r["litros_descargados"] = float(tri[3])
+        return True
+    a, na, _ = moda(v["vi"])
+    b, nb, _ = moda(v["vf"])
+    if a and b and min(na, nb) >= MIN_VOTOS and LITROS_MIN <= b - a <= LITROS_MAX:
+        r["litros_descargados"] = float(b - a)
+        r["alertas"].append(
+            "Aumento Bruto calculado como volumen final − inicial (el impreso no se leyó); puede diferir 1 L."
+        )
+    else:
+        r["alertas"].append("No se pudo leer el Aumento Bruto con certeza; capturarlo en la Mesa de Control.")
+    return False
+
+
+def _resolver_fechas(r, v):
+    fecha, nf, _ = moda(v["di"] + v["df"])
+    hi, n_hi, _ = moda(v["hi"])
+    hf, n_hf, _ = moda(v["hf"])
+    di, _, _ = moda(v["di"])
+    df, _, _ = moda(v["df"])
+    if fecha and nf >= MIN_VOTOS:
+        r["fecha"] = datetime.strptime(fecha, "%Y-%m-%d").strftime(FORMATO_FECHA)
+    if hi and n_hi >= MIN_VOTOS:
+        r["hora_inicio"] = hi
+    if hf and n_hf >= MIN_VOTOS:
+        r["hora_termino"] = hf
+    if not (r["fecha"] and r["hora_inicio"] and r["hora_termino"]):
+        r["alertas"].append("No se leyeron con certeza fecha y horas; capturarlas en la Mesa de Control.")
+    elif di and df and di != df:
+        r["alertas"].append("La descarga parece cruzar la medianoche; verifique la fecha.")
+    elif r["hora_termino"] < r["hora_inicio"]:
+        r["alertas"].append("La hora de término es anterior al inicio; verifique.")
+
+
+def _resolver(r, v, litros_ref):
+    verificado = _resolver_bruto(r, v)
+    bruto = r["litros_descargados"]
+    if bruto and litros_ref and abs(bruto - litros_ref) / litros_ref > TOLERANCIA_REF:
+        r["alertas"].append("El Aumento Bruto difiere más de 8% de los litros facturados.")
+    _resolver_fechas(r, v)
+    tq, _, _ = moda(v["tq"])
+    if tq:
+        r["tanque_vr"] = tq
+    completo = bool(bruto and r["fecha"] and r["hora_inicio"] and r["hora_termino"])
+    if completo:
+        r["confianza"] = "alta" if (verificado and tq and not r["alertas"]) else "media"
+    else:
+        r["confianza"] = "baja"
+    if r["confianza"] != "alta":
+        r["alertas"].append("Confirme los datos del ticket en la Mesa de Control antes de generar el PDF.")
