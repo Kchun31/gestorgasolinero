@@ -1,5 +1,6 @@
-import base64, io, json, re, time, requests
-from PIL import Image, ImageOps
+import io, re
+import xml.etree.ElementTree as ET
+from PIL import Image, ImageOps, ImageEnhance
 
 def normalizar_litros(valor):
     if valor is None or str(valor).strip() == "":
@@ -11,6 +12,54 @@ def normalizar_litros(valor):
     if 5.0 <= num <= 99.999 and "." in m[0] and len(m[0].split(".")[1]) == 3:
         num *= 1000.0
     return round(num, 2)
+
+def extraer_datos_xml_cfdi(xml_bytes, nombre_archivo=""):
+    datos = {
+        "factura": "",
+        "uuid": "",
+        "producto": "REGULAR (MAGNA)",
+        "tanque_vr": "T1: MAGNA",
+        "litros_facturados": 0.0,
+        "embarque": "S/D",
+        "tanque_at": "S/D"
+    }
+    try:
+        root = ET.fromstring(xml_bytes)
+        serie = root.attrib.get("Serie", "") or root.attrib.get("serie", "")
+        folio = root.attrib.get("Folio", "") or root.attrib.get("folio", "")
+        if serie or folio:
+            datos["factura"] = f"{serie}{folio}".strip().upper()
+
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag == "TimbreFiscalDigital":
+                uuid = elem.attrib.get("UUID", "") or elem.attrib.get("uuid", "")
+                if uuid:
+                    datos["uuid"] = uuid.upper()
+            elif tag == "Concepto":
+                cant_str = elem.attrib.get("Cantidad", "") or elem.attrib.get("cantidad", "0")
+                desc = (elem.attrib.get("Descripcion", "") or elem.attrib.get("descripcion", "")).upper()
+                clave = elem.attrib.get("ClaveProdServ", "")
+                try:
+                    cant = float(cant_str)
+                    if 10.0 <= cant <= 65.0:
+                        cant *= 1000.0
+                    if cant > datos["litros_facturados"]:
+                        datos["litros_facturados"] = round(cant, 2)
+                        if "DIESEL" in desc or "DIÉSEL" in desc or clave == "15101505" or "32011" in desc:
+                            datos["producto"] = "DIÉSEL"
+                            datos["tanque_vr"] = "T2: DIÉSEL"
+                        elif "PREMIUM" in desc or clave == "15101515":
+                            datos["producto"] = "PREMIUM"
+                            datos["tanque_vr"] = "T3: PREMIUM"
+                        else:
+                            datos["producto"] = "REGULAR (MAGNA)"
+                            datos["tanque_vr"] = "T1: MAGNA"
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return datos
 
 def extraer_datos_factura_local(texto_pdf="", nombre_archivo=""):
     datos = {
@@ -81,54 +130,45 @@ def extraer_datos_factura_local(texto_pdf="", nombre_archivo=""):
 
     return datos
 
-def comprimir_imagen_b64(img_bytes):
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(img_bytes))).convert("L")
-    img = ImageOps.autocontrast(img)
-    img.thumbnail((720, 720), Image.Resampling.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=68, optimize=True)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
+def extraer_tira_ocr_local(img_bytes):
+    datos = {"litros_descargados": 0.0, "fecha": "", "hora_inicio": "", "hora_termino": "", "tanque_vr": ""}
+    try:
+        import pytesseract
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(img_bytes))).convert("L")
+        w, h = img.size
+        if w < 1000:
+            img = img.resize((w * 2, h * 2), Image.Resampling.LANCZOS)
+        img = ImageEnhance.Contrast(img).enhance(2.2)
+        img = ImageEnhance.Sharpness(img).enhance(2.0)
 
-def extraer_con_ia_ligera(b_tira, api_key, texto_pdf="", b_factura=None, pedir_factura=False):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key.strip()}"
-    prompt = (
-        "Extrae los datos del ticket Veeder-Root (y factura si se adjunta). "
-        "En la tira Veeder-Root toma 'litros_descargados' de la línea 'AUMENTO BRUTO' (ej. 43285 o 43342, nunca uses Aumento Neto), "
-        "'tanque_vr' ('T1: MAGNA' si dice T1 o MAGNA, 'T2: DIÉSEL' si dice T2 o DIESEL), "
-        "'fecha' en formato DD/MM/AAAA, 'hora_inicio' (HH:MM) y 'hora_termino' (HH:MM). "
-        "Responde SOLO JSON: "
-        '{"litros_descargados": 0.0, "fecha": "DD/MM/AAAA", "hora_inicio": "HH:MM", "hora_termino": "HH:MM", '
-        '"tanque_vr": "T1: MAGNA", "factura": "", "uuid": "", "litros_facturados": 0.0, "embarque": "S/D", "tanque_at": "S/D"}'
-    )
-    parts = [{"text": prompt}]
-    if b_tira:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": comprimir_imagen_b64(b_tira)}})
-    if pedir_factura:
-        if texto_pdf and len(texto_pdf.strip()) > 20:
-            parts.append({"text": f"Texto factura:\n{texto_pdf[:3500]}"})
-        elif b_factura:
-            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": comprimir_imagen_b64(b_factura)}})
+        txt = pytesseract.image_to_string(img, config="--oem 3 --psm 6")
+        txt_up = txt.upper()
 
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}
-    }
-    for intento in range(2):
-        try:
-            r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=(10, 45))
-            if r.status_code == 200:
-                txt_resp = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                match = re.search(r"\{.*\}", txt_resp, re.DOTALL)
-                if match:
-                    return json.loads(match.group(0), strict=False), None
-            elif r.status_code in (429, 500, 502, 503, 504) and intento == 0:
-                time.sleep(4)
-                continue
-            else:
-                return None, f"HTTP {r.status_code}: {r.text[:200]}"
-        except Exception as e:
-            if intento == 0:
-                time.sleep(3)
-            else:
-                return None, str(e)
-    return None, "Tiempo de espera agotado en servidor IA."
+        if "DIESEL" in txt_up or "T 2" in txt_up or "T2" in txt_up:
+            datos["tanque_vr"] = "T2: DIÉSEL"
+        elif "MAGNA" in txt_up or "REGULAR" in txt_up or "T 1" in txt_up or "T1" in txt_up:
+            datos["tanque_vr"] = "T1: MAGNA"
+
+        m_bruto = re.search(r"(?:BRUTO|AUMENTO\s*B|AUM\w*\s*B)[^\d]{0,20}(\d{4,5}(?:\.\d{1,2})?)", txt_up)
+        if m_bruto:
+            datos["litros_descargados"] = float(m_bruto.group(1))
+        else:
+            nums = [float(n) for n in re.findall(r"\b([1-5]\d{4})\b", txt_up) if 10000 <= float(n) <= 58000]
+            if nums:
+                datos["litros_descargados"] = nums[-1]
+
+        m_fec = re.search(r"\b(\d{2}[/\-]\d{2}[/\-]\d{2,4})\b", txt_up)
+        if m_fec:
+            f_str = m_fec.group(1).replace("-", "/")
+            partes_f = f_str.split("/")
+            if len(partes_f[2]) == 2:
+                f_str = f"{partes_f[0]}/{partes_f[1]}/20{partes_f[2]}"
+            datos["fecha"] = f_str
+
+        horas = re.findall(r"\b([0-2]?\d:[0-5]\d)\b", txt_up)
+        if len(horas) >= 2:
+            datos["hora_inicio"] = horas[0].zfill(5)
+            datos["hora_termino"] = horas[-1].zfill(5)
+    except Exception:
+        pass
+    return datos
