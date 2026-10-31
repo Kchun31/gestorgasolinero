@@ -1,6 +1,7 @@
 import base64, calendar, io, json, os, re, zipfile
 from datetime import datetime, timedelta, timezone
 import pandas as pd
+from PIL import Image as PILImage
 import requests
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -41,6 +42,19 @@ def buscar_imagen(nombres_base):
             if os.path.exists(ruta):
                 return ruta
     return None
+
+def imagen_proporcional(ruta, max_w, max_h):
+    if not ruta or not os.path.exists(ruta):
+        return None
+    try:
+        with PILImage.open(ruta) as im:
+            w, h = im.size
+        if w > 0 and h > 0:
+            escala = min(float(max_w) / w, float(max_h) / h)
+            return RLImage(ruta, width=w * escala, height=h * escala)
+    except Exception:
+        pass
+    return RLImage(ruta, width=max_w, height=max_h)
 
 def limpiar_nombre(txt):
     s = re.sub(r'[\\/*?:"<>|\n\r\t]+', "_", str(txt or "").strip())
@@ -136,7 +150,7 @@ def crear_pdf_bitacora_mtto(datos):
         return Paragraph(str(txt).replace("\n", "<br/>"), st_p)
 
     logo_p = buscar_imagen(["logo_teika", "cabecera"])
-    logo = RLImage(logo_p, width=95, height=42) if logo_p else P("<b>[Logo TEIKA]</b>")
+    logo = imagen_proporcional(logo_p, 100, 45) if logo_p else P("<b>[Logo TEIKA]</b>")
     dir_txt = (
         "<font size=10><b>COMBUSTIBLES BUENOS AIRES, S.A. DE C.V.</b></font><br/>"
         "AV. BUENOS AIRES NO. 401, AGRÍCOLA BUENOS AIRES, JANOS, CHIHUAHUA. C.P. 31884.<br/>"
@@ -205,12 +219,12 @@ def crear_pdf_bitacora_mtto(datos):
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
     ]))
-    elementos.extend([t_obs, Spacer(1, 35)])
+    elementos.extend([t_obs, Spacer(1, 25)])
 
     f_salv = buscar_imagen(["firma_salvador.png", "firma_salvador"])
     f_jes = buscar_imagen(["firma_jesus negro.png", "firma_jesus negro", "firma_jesus.png", "firma_jesus"])
-    img_salv = RLImage(f_salv, width=110, height=42) if f_salv else P("<i>[Firma Salvador Delgado]</i>", s_ctr)
-    img_jes = RLImage(f_jes, width=165, height=68) if f_jes else P("<b>[Firma Jesús Carbajal]</b>", s_ctr)
+    img_salv = imagen_proporcional(f_salv, 125, 55) if f_salv else P("<i>[Firma Salvador Delgado]</i>", s_ctr)
+    img_jes = imagen_proporcional(f_jes, 185, 85) if f_jes else P("<b>[Firma Jesús Carbajal]</b>", s_ctr)
 
     t_fir = Table([
         [img_salv, "", img_jes],
@@ -281,16 +295,18 @@ def generar_zip_mantenimiento(actividades, mes_num, mes_nombre, anio, folio_mtto
             sub_area = limpiar_nombre(act["area"])
             elem_clean = limpiar_nombre(act["elemento"])
             nombre_pdf = f"Folio_{f_mtto:04d}_Dia_{act['dia']:02d}_{elem_clean}.pdf"
-            zf.writestr(f"{carpeta_raiz}/01_Mantenimiento_Programado/{sub_area}/{nombre_pdf}", pdf_bytes)
-            archivos_creados.append((nombre_pdf, pdf_bytes))
+            subcarpeta = f"{carpeta_raiz}/01_Mantenimiento_Programado/{sub_area}"
+            zf.writestr(f"{subcarpeta}/{nombre_pdf}", pdf_bytes)
+            archivos_creados.append((nombre_pdf, pdf_bytes, subcarpeta))
             f_mtto += 1
 
         if incluir_limpieza_diaria:
             for dia in range(d_ini, d_fin + 1):
                 pdf_limp = crear_pdf_bitacora_mtto(armar_datos_limpieza(f_limp, dia, mes_num, anio))
                 nombre_l = f"Folio_{f_limp:04d}_{anio}-{mes_num:02d}-{dia:02d}_Limpieza_Diaria.pdf"
-                zf.writestr(f"{carpeta_raiz}/02_Limpieza_Diaria_Elementos_Constructivos/{nombre_l}", pdf_limp)
-                archivos_creados.append((nombre_l, pdf_limp))
+                subcarpeta_l = f"{carpeta_raiz}/02_Limpieza_Diaria_Elementos_Constructivos"
+                zf.writestr(f"{subcarpeta_l}/{nombre_l}", pdf_limp)
+                archivos_creados.append((nombre_l, pdf_limp, subcarpeta_l))
                 f_limp += 1
 
     guardar_folios_mtto(f_mtto, f_limp)
@@ -300,12 +316,19 @@ def enviar_lote_drive(archivos_creados, url_script):
     if not url_script:
         return 0, "Falta URL_GOOGLE_SCRIPT en Secrets."
     enviados = 0
-    for nombre_pdf, pdf_bytes in archivos_creados:
+    for item in archivos_creados:
+        nombre_pdf, pdf_bytes = item[0], item[1]
+        subcarpeta = item[2] if len(item) > 2 else ""
         try:
             pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-            res = requests.post(url_script.strip(), data={"archivoB64": pdf_b64, "nombreArchivo": nombre_pdf}, timeout=30)
+            payload = {
+                "archivoB64": pdf_b64,
+                "nombreArchivo": nombre_pdf,
+                "subcarpeta": subcarpeta,
+            }
+            res = requests.post(url_script.strip(), data=payload, timeout=30)
             if any(w in res.text.lower() for w in ["éxito", "exito", "success"]):
                 enviados += 1
         except Exception:
             pass
-    return enviados, f"{enviados}/{len(archivos_creados)} enviados a Google Drive."
+    return enviados, f"{enviados}/{len(archivos_creados)} enviados y organizados en Google Drive."
