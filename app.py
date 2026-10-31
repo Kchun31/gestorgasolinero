@@ -124,3 +124,94 @@ folio_input = st.number_input("📌 Número de Folio Consecutivo", min_value=1, 
 st.markdown("### 🛠️ Mesa de Control y Validación (NOM-005-ASEA-2016)")
 c1, c2, c3 = st.columns(3)
 with c1:
+    st.session_state.d_factura = st.text_input("Folio Factura", value=st.session_state.d_factura)
+    st.session_state.d_litros_fac = st.number_input("Litros Facturados (L)", value=float(st.session_state.d_litros_fac), step=100.0, format="%.2f")
+    st.session_state.d_fecha = st.text_input("Fecha Descarga (DD/MM/AAAA)", value=st.session_state.d_fecha)
+with c2:
+    st.session_state.d_uuid = st.text_input("Folio Fiscal (UUID)", value=st.session_state.d_uuid)
+    st.session_state.d_litros_desc = st.number_input("Aumento Bruto Veeder-Root (L)", value=float(st.session_state.d_litros_desc), step=100.0, format="%.2f")
+    st.session_state.d_hora_ini = st.text_input("Hora Inicio (HH:MM)", value=st.session_state.d_hora_ini)
+with c3:
+    opciones_prod = ["REGULAR (MAGNA)", "DIÉSEL", "PREMIUM"]
+    idx_p = opciones_prod.index(st.session_state.d_producto) if st.session_state.d_producto in opciones_prod else 0
+    st.session_state.d_producto = st.selectbox("Producto", opciones_prod, index=idx_p)
+    opciones_tq = ["T1: MAGNA", "T2: DIÉSEL", "T3: PREMIUM"]
+    idx_t = opciones_tq.index(st.session_state.d_tanque_vr) if st.session_state.d_tanque_vr in opciones_tq else 0
+    st.session_state.d_tanque_vr = st.selectbox("Tanque Veeder-Root", opciones_tq, index=idx_t)
+    st.session_state.d_hora_fin = st.text_input("Hora Término (HH:MM)", value=st.session_state.d_hora_fin)
+
+c4, c5, c6 = st.columns(3)
+with c4:
+    st.session_state.d_embarque = st.text_input("Embarque", value=st.session_state.d_embarque)
+with c5:
+    st.session_state.d_tanque_at = st.text_input("Tanque Autotanque", value=st.session_state.d_tanque_at)
+with c6:
+    st.session_state.d_operador = st.text_input("Operador", value=st.session_state.d_operador)
+
+dif_litros = abs(st.session_state.d_litros_fac - st.session_state.d_litros_desc)
+pct_merma = (dif_litros / st.session_state.d_litros_fac * 100.0) if st.session_state.d_litros_fac > 0 else 0.0
+if st.session_state.d_litros_fac > 0 and st.session_state.d_litros_desc > 0:
+    if pct_merma <= 0.55:
+        st.success(f"🟢 SEMÁFORO NORMATIVO EN RANGO | Desviación: {dif_litros:,.2f} L ({pct_merma:.2f}%)")
+    else:
+        st.warning(f"🔴 ALERTA DE VARIACIÓN VOLUMÉTRICA | Desviación: {dif_litros:,.2f} L ({pct_merma:.2f}%)")
+
+st.markdown("---")
+
+if st.button("🚀 Procesar y Subir a Google Drive", type="primary", use_container_width=True):
+    if img_tira is None:
+        st.error("❌ Primero pega la imagen de la Tira Veeder-Root con el botón rojo arriba.")
+        st.stop()
+    if st.session_state.d_litros_desc <= 0 or not st.session_state.d_fecha.strip():
+        st.error("❌ Verifica que 'Aumento Bruto Veeder-Root' y 'Fecha Descarga' tengan datos en la Mesa de Control arriba.")
+        st.stop()
+
+    factura_clean = re.sub(r'[\\/*?:"<>| ]', "_", st.session_state.d_factura.strip() or "SD")
+    folio_str = str(int(folio_input)).zfill(4)
+    nombre_archivo_pdf = f"Bitacora_Folio_{folio_str}_{factura_clean}.pdf"
+    ruta_pdf = os.path.join(carpeta_destino, nombre_archivo_pdf)
+
+    datos_pdf = {
+        "folio": int(folio_input),
+        "factura": st.session_state.d_factura.strip() or "SD",
+        "uuid": st.session_state.d_uuid.strip() or "SD",
+        "producto": st.session_state.d_producto,
+        "tanque_vr": st.session_state.d_tanque_vr,
+        "litros_facturados": st.session_state.d_litros_fac,
+        "litros_descargados": st.session_state.d_litros_desc,
+        "fecha": st.session_state.d_fecha.strip() or "SD",
+        "hora_inicio": st.session_state.d_hora_ini.strip() or "00:00",
+        "hora_termino": st.session_state.d_hora_fin.strip() or "00:00",
+        "embarque": st.session_state.d_embarque.strip() or "S/D",
+        "tanque_at": st.session_state.d_tanque_at.strip() or "S/D",
+        "operador": st.session_state.d_operador.strip() or "Javier Arturo Garcia"
+    }
+
+    try:
+        generar_pdf_recepcion(datos_pdf, img_tira, ruta_pdf)
+        siguiente_folio = int(folio_input) + 1
+        guardar_folio(siguiente_folio)
+        st.session_state.folio_actual = siguiente_folio
+    except Exception as e_pdf:
+        st.error(f"❌ Error al construir el PDF: {e_pdf}")
+        st.stop()
+
+    try:
+        url_script = st.secrets.get("URL_GOOGLE_SCRIPT")
+        if url_script:
+            with open(ruta_pdf, "rb") as f:
+                pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+            res = requests.post(url_script.strip(), data={"archivoB64": pdf_b64, "nombreArchivo": nombre_archivo_pdf}, timeout=45)
+            if any(w in res.text.lower() for w in ["éxito", "exito", "success"]):
+                st.success("✅ ¡Bitácora enviada y guardada en tu Google Drive!")
+                st.info(f"📌 Siguiente folio reservado: {siguiente_folio}")
+            else:
+                st.warning(f"⚠️ Respuesta Drive: {res.text}")
+        else:
+            st.warning("⚠️ Falta URL_GOOGLE_SCRIPT en Secrets.")
+    except Exception as e_net:
+        st.warning(f"⚠️ PDF creado, pero falló envío a Drive: {e_net}")
+
+    with open(ruta_pdf, "rb") as pdf_file:
+        st.download_button(label="📥 Descargar Copia", data=pdf_file.read(), file_name=nombre_archivo_pdf, mime="application/pdf", use_container_width=True)
+# === FIN DE app.py ===
