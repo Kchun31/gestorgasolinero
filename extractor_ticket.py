@@ -10,7 +10,7 @@ from ticket_imagen import (
 from ticket_parse import (
     LITROS_MIN, LITROS_MAX, RE_VOL, RE_BRUTO,
     numeros, fechahoras, par_de_texto, producto_ticket, puntuar,
-    localizar, moda, mejor_triple, _linea_con,
+    localizar, moda, mejor_triple, resolver_par_horas, _linea_con,
 )
 
 FORMATO_FECHA = "%d/%m/%Y"
@@ -78,7 +78,7 @@ def _trabajos_recorte(variantes):
         for clave, caja in localizar(var["lineas"]).items():
             es_fecha = clave in ("fi", "ff")
             lista = WL_FECHA if es_fecha else WL_NUM
-            angs = (0,) if es_fecha else (0, 1.5, -1.5)
+            angs = (0, 1.5, -1.5)
             for th in UMBRALES_RECORTE:
                 for esc in (2, 3):
                     for a in angs:
@@ -136,16 +136,17 @@ def _resolver_bruto(r, v):
 
 def _resolver_fechas(r, v):
     fecha, nf, _ = moda(v["di"] + v["df"])
-    hi, n_hi, _ = moda(v["hi"])
-    hf, n_hf, _ = moda(v["hf"])
     di, _, _ = moda(v["di"])
     df, _, _ = moda(v["df"])
     if fecha and nf >= MIN_VOTOS:
         r["fecha"] = datetime.strptime(fecha, "%Y-%m-%d").strftime(FORMATO_FECHA)
-    if hi and n_hi >= MIN_VOTOS:
+
+    hi, hf = resolver_par_horas(v["hi"], v["hf"])
+    if hi:
         r["hora_inicio"] = hi
-    if hf and n_hf >= MIN_VOTOS:
+    if hf:
         r["hora_termino"] = hf
+
     if not (r["fecha"] and r["hora_inicio"] and r["hora_termino"]):
         r["alertas"].append("No se leyeron con certeza fecha y horas; capturarlas en la Mesa de Control.")
     elif di and df and di != df:
