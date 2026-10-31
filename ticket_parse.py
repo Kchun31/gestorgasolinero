@@ -29,15 +29,21 @@ def numeros(txt):
     return out
 
 
-def fechahoras(txt):
+def _limpiar_texto_fecha(txt):
     t = (txt or "").upper()
+    t = re.sub(r"(?<=\d)O(?=\d)", "0", t)
+    t = re.sub(r"(?<=\s)O(?=\d)", "0", t)
+    t = re.sub(r"(?<=\d)[IL|](?=\d)", "1", t)
+    return t
+
+
+def fechahoras(txt):
+    t = _limpiar_texto_fecha(txt)
     dts = []
     patron = r"(\d{2})[-/.](\d{2})[-/.](\d{2,4})\s+([0-2]?\d)[:.]([0-5]\d)"
     for m in re.finditer(patron, t):
         d, mes, y, hh, mm = m.groups()
-        year = int(y)
-        if year < 100:
-            year += 2000
+        year = int(y) + (2000 if int(y) < 100 else 0)
         try:
             dts.append(datetime(year, int(mes), int(d), int(hh), int(mm)))
         except ValueError:
@@ -46,11 +52,12 @@ def fechahoras(txt):
 
 
 def par_de_texto(txt):
-    dts = fechahoras(txt)
+    t = _limpiar_texto_fecha(txt)
+    dts = fechahoras(t)
     if len(dts) >= 2:
         return dts[0], dts[-1]
     fechas = []
-    for m in re.finditer(r"\b(\d{2})[-/](\d{2})[-/](\d{2,4})\b", txt or ""):
+    for m in re.finditer(r"\b(\d{2})[-/](\d{2})[-/](\d{2,4})\b", t):
         d, mes, y = m.groups()
         year = int(y) + (2000 if int(y) < 100 else 0)
         try:
@@ -58,7 +65,7 @@ def par_de_texto(txt):
         except ValueError:
             pass
     horas = []
-    for m in re.finditer(r"\b([0-2]?\d):([0-5]\d)\b", txt or ""):
+    for m in re.finditer(r"(?<![\d/.\-])([0-2]?\d):([0-5]\d)\b", t):
         hh, mm = int(m.group(1)), int(m.group(2))
         if 0 <= hh <= 23:
             horas.append((hh, mm))
@@ -101,7 +108,7 @@ def puntuar(lineas):
     return score
 
 
-def _caja_linea(l, pad_x=18, pad_y=10, solo_derecha=False):
+def _caja_linea(l, pad_x=22, pad_y=12, solo_derecha=False):
     palabras = l
     if solo_derecha:
         con_dig = [w for w in l if sum(c.isdigit() for c in w[0]) >= 3]
@@ -137,6 +144,73 @@ def moda(lista):
     c = Counter(vals)
     val, n = c.most_common(1)[0]
     return val, n, len(vals)
+
+
+def _a_min(h_str):
+    hh, mm = h_str.split(":")
+    return int(hh) * 60 + int(mm)
+
+
+def _variantes_confusion_termica(h_str):
+    hh, mm = h_str.split(":")
+    equivalentes = {
+        "19": ["08", "09"],
+        "18": ["08", "06"],
+        "16": ["06", "08"],
+        "10": ["00", "08"],
+        "09": ["08"],
+        "08": ["09", "06"],
+    }
+    return [f"{alt}:{mm}" for alt in equivalentes.get(hh, [])]
+
+
+def resolver_par_horas(hi_list, hf_list):
+    if not hi_list and not hf_list:
+        return "", ""
+    if not hi_list:
+        hf, _, _ = moda(hf_list)
+        return "", hf or ""
+    if not hf_list:
+        hi, _, _ = moda(hi_list)
+        return hi or "", ""
+
+    mi_mod, _, _ = moda([h.split(":")[1] for h in hi_list if ":" in h])
+    mf_mod, _, _ = moda([h.split(":")[1] for h in hf_list if ":" in h])
+
+    c_hi = Counter(hi_list)
+    c_hf = Counter(hf_list)
+
+    for h_raw, votos in list(c_hi.items()):
+        for alt in _variantes_confusion_termica(h_raw):
+            c_hi[alt] += max(1, votos // 2)
+    for h_raw, votos in list(c_hf.items()):
+        for alt in _variantes_confusion_termica(h_raw):
+            c_hf[alt] += max(1, votos // 2)
+
+    mejor_par = None
+    mejor_score = -1e9
+
+    for hi, n_i in c_hi.most_common(12):
+        for hf, n_f in c_hf.most_common(12):
+            diff = _a_min(hf) - _a_min(hi)
+            bono_min = (2 if hi.endswith(f":{mi_mod}") else 0) + (2 if hf.endswith(f":{mf_mod}") else 0)
+            votos_reales = hi_list.count(hi) + hf_list.count(hf)
+            score = (n_i + n_f) * 3 + votos_reales * 2 + bono_min
+
+            if 10 <= diff <= 150:
+                score += 45
+            elif 1 <= diff < 10 or 150 < diff <= 240:
+                score += 20
+            elif -1430 <= diff <= -1320:
+                score += 15
+            else:
+                score -= 60
+
+            if score > mejor_score:
+                mejor_score = score
+                mejor_par = (hi, hf)
+
+    return mejor_par if mejor_par else (moda(hi_list)[0] or "", moda(hf_list)[0] or "")
 
 
 def mejor_triple(vi_list, vf_list, br_list):
