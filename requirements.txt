@@ -1,8 +1,10 @@
-google-generativeai>=0.7.0
 streamlit
-PyPDF2
-reportlab
-Pillow
 streamlit-paste-button
 requests
+Pillow
 pytesseract
+pypdf
+PyPDF2
+reportlab
+pandas
+openpyxl
