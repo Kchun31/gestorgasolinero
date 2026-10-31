@@ -7,7 +7,7 @@ LITROS_MAX = 65000
 
 RE_VOL = re.compile(r"VOL[UVN\w]*|V0L[UVN\w]*", re.I)
 RE_BRUTO = re.compile(r"BRUT\w*|AUMENT\w*\s*B\w*", re.I)
-RE_FECHA_LIN = re.compile(r"\b\d{2}[-/]\d{2}[-/]\d{2,4}\b")
+RE_FECHA_LIN = re.compile(r"\b\d{1,4}[-/.\s]\d{1,2}[-/.\s]\d{2,4}\b")
 
 
 def _linea_con(lineas, patron):
@@ -40,22 +40,63 @@ def _limpiar_texto_fecha(txt):
 def fechahoras(txt):
     t = _limpiar_texto_fecha(txt)
     dts = []
-    patron = r"(\d{2})[-/.](\d{2})[-/.](\d{2,4})\s+([0-2]?\d)[:.]([0-5]\d)"
+    patron = r"\b(\d{1,4})[-/.\s]+(\d{1,2})[-/.\s]+(\d{2,4})\s+([0-2]?\d)[:.\s]([0-5]\d)\b"
     for m in re.finditer(patron, t):
-        d, mes, y, hh, mm = m.groups()
-        year = int(y) + (2000 if int(y) < 100 else 0)
+        a, b, c, hh, mm = m.groups()
+        ih, im = int(hh), int(mm)
+        if not (0 <= ih <= 23 and 0 <= im <= 59):
+            continue
+        ia, ib, ic = int(a), int(b), int(c)
+        if ia > 1900:
+            year, mes, dia = ia, ib, ic
+        else:
+            dia, mes, year = ia, ib, (ic + 2000 if ic < 100 else ic)
+        if mes > 12 and dia <= 12:
+            dia, mes = mes, dia
         try:
-            dts.append(datetime(year, int(mes), int(d), int(hh), int(mm)))
+            dts.append(datetime(year, mes, dia, ih, im))
         except ValueError:
             pass
     return dts
 
 
+def _elegir_par_descarga(dts):
+    if len(dts) < 2:
+        return None
+    if len(dts) == 2:
+        return dts[0], dts[1]
+    mejor = None
+    mejor_score = -1e9
+    n = len(dts)
+    for i in range(n - 1):
+        for j in range(i + 1, n):
+            dt1, dt2 = dts[i], dts[j]
+            diff_min = (dt2 - dt1).total_seconds() / 60.0
+            score = 0
+            if i == n - 2 and j == n - 1:
+                score += 60
+            elif i >= 1:
+                score += 30
+            if 5 <= diff_min <= 180:
+                score += 120
+            elif 1 <= diff_min < 5 or 180 < diff_min <= 300:
+                score += 40
+            elif diff_min <= 0:
+                score -= 250
+            else:
+                score -= 90
+            if score > mejor_score:
+                mejor_score = score
+                mejor = (dt1, dt2)
+    return mejor
+
+
 def par_de_texto(txt):
     t = _limpiar_texto_fecha(txt)
     dts = fechahoras(t)
-    if len(dts) >= 2:
-        return dts[0], dts[-1]
+    par = _elegir_par_descarga(dts)
+    if par:
+        return par
     fechas = []
     for m in re.finditer(r"\b(\d{2})[-/](\d{2})[-/](\d{2,4})\b", t):
         d, mes, y = m.groups()
@@ -70,14 +111,14 @@ def par_de_texto(txt):
         if 0 <= hh <= 23:
             horas.append((hh, mm))
     if fechas and len(horas) >= 2:
-        y, mes, d = fechas[0]
-        y2, mes2, d2 = fechas[-1]
-        try:
-            dt1 = datetime(y, mes, d, horas[0][0], horas[0][1])
-            dt2 = datetime(y2, mes2, d2, horas[-1][0], horas[-1][1])
-            return dt1, dt2
-        except ValueError:
-            pass
+        y, mes, d = fechas[-1]
+        candidatos = []
+        for hh, mm in horas:
+            try:
+                candidatos.append(datetime(y, mes, d, hh, mm))
+            except ValueError:
+                pass
+        return _elegir_par_descarga(candidatos)
     return None
 
 
@@ -132,7 +173,7 @@ def localizar(lineas):
         cajas["br"] = _caja_linea(brutos[-1], solo_derecha=True)
     fechas = _linea_con(lineas, RE_FECHA_LIN)
     if len(fechas) >= 2:
-        cajas["fi"] = _caja_linea(fechas[0])
+        cajas["fi"] = _caja_linea(fechas[-2])
         cajas["ff"] = _caja_linea(fechas[-1])
     return cajas
 
@@ -197,14 +238,14 @@ def resolver_par_horas(hi_list, hf_list):
             votos_reales = hi_list.count(hi) + hf_list.count(hf)
             score = (n_i + n_f) * 3 + votos_reales * 2 + bono_min
 
-            if 10 <= diff <= 150:
-                score += 45
-            elif 1 <= diff < 10 or 150 < diff <= 240:
-                score += 20
+            if 5 <= diff <= 150:
+                score += 65
+            elif 1 <= diff < 5 or 150 < diff <= 240:
+                score += 25
             elif -1430 <= diff <= -1320:
                 score += 15
             else:
-                score -= 60
+                score -= 120
 
             if score > mejor_score:
                 mejor_score = score
