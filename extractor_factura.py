@@ -30,11 +30,20 @@ def normalizar_litros(valor):
     return round(num, 2)
 
 
-def _producto(clave, desc):
-    d = (desc or "").upper()
-    if "DIESEL" in d or "DIÉSEL" in d or clave == "15101505" or "32011" in d:
+def _producto(clave, desc, nombre_archivo=""):
+    c = (clave or "").strip()
+    d = f"{desc or ''} {nombre_archivo or ''}".upper()
+    if (
+        c in ("15101505", "15101506")
+        or "15101505" in d
+        or "DIESEL" in d
+        or "DIÉSEL" in d
+        or "32011" in d
+        or "34006" in d
+        or "UBA" in d
+    ):
         return "DIÉSEL", "T2: DIÉSEL"
-    if "PREMIUM" in d or clave == "15101515":
+    if c == "15101515" or "15101515" in d or "PREMIUM" in d or "32012" in d:
         return "PREMIUM", "T3: PREMIUM"
     return "REGULAR (MAGNA)", "T1: MAGNA"
 
@@ -91,18 +100,20 @@ def extraer_datos_xml_cfdi(xml_bytes, nombre_archivo=""):
             elif tag == "Concepto":
                 cant_str = elem.attrib.get("Cantidad", "") or elem.attrib.get("cantidad", "0")
                 desc = elem.attrib.get("Descripcion", "") or elem.attrib.get("descripcion", "")
-                clave = elem.attrib.get("ClaveProdServ", "")
-                descripciones.append(desc)
+                clave = elem.attrib.get("ClaveProdServ", "") or elem.attrib.get("claveProdServ", "")
+                descripciones.append(f"{clave} {desc}")
                 try:
                     cant = float(cant_str)
                     if 10.0 <= cant <= 65.0:
                         cant *= 1000.0
                     if cant > datos["litros_facturados"]:
                         datos["litros_facturados"] = round(cant, 2)
-                        datos["producto"], datos["tanque_vr"] = _producto(clave, desc)
+                        datos["producto"], datos["tanque_vr"] = _producto(clave, desc, nombre_archivo)
                 except Exception:
                     pass
         todo = "\n".join(descripciones)
+        if datos["producto"] == "REGULAR (MAGNA)":
+            datos["producto"], datos["tanque_vr"] = _producto("", todo, nombre_archivo)
         datos["embarque"] = _embarque(todo)
         datos["tanque_at"] = _tanque_autotanque(todo)
     except Exception:
@@ -139,7 +150,7 @@ def _litros_pdf(txt):
     amplios = []
     for linea in txt.splitlines():
         up = linea.upper()
-        if not any(k in up for k in ("LTR", "LITRO", "MAGNA", "REGULAR", "DIESEL", "DIÉSEL", "PREMIUM")):
+        if not any(k in up for k in ("LTR", "LITRO", "MAGNA", "REGULAR", "DIESEL", "DIÉSEL", "PREMIUM", "151015")):
             continue
         for m in re.finditer(r"(?<![\d.,$])(\d{1,3}(?:,\d{3})+(?:\.\d{1,4})?|\d{4,6}(?:\.\d{1,4})?)(?![\d,])", linea):
             v = float(m.group(1).replace(",", ""))
@@ -159,8 +170,8 @@ def extraer_datos_factura_local(texto_pdf="", nombre_archivo=""):
     datos["litros_facturados"] = _litros_pdf(txt)
     cuerpo = re.search(r"CANTIDAD\s+UNIDAD.*?(?=CANTIDAD\s+CON\s+LETRA|SUBTOTAL)", txt, re.S | re.I)
     zona = cuerpo.group(0) if cuerpo else txt
-    clave = re.search(r"\b(15101505|15101514|15101515)\b", zona)
-    datos["producto"], datos["tanque_vr"] = _producto(clave.group(1) if clave else "", zona)
-    datos["embarque"] = _embarque(zona)
-    datos["tanque_at"] = _tanque_autotanque(zona)
+    clave = re.search(r"\b(15101505|15101506|15101514|15101515)\b", txt)
+    datos["producto"], datos["tanque_vr"] = _producto(clave.group(1) if clave else "", txt, nombre_archivo)
+    datos["embarque"] = _embarque(zona) if _embarque(zona) != "S/D" else _embarque(txt)
+    datos["tanque_at"] = _tanque_autotanque(zona) if _tanque_autotanque(zona) != "S/D" else _tanque_autotanque(txt)
     return datos
