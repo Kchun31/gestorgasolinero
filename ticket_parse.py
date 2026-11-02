@@ -223,7 +223,7 @@ def corregir_hora_inicio(hi, hf):
         if 1 <= dif <= 180:
             return cand, hf
     if min_i > min_f and int(hh_f) <= 11 and int(hh_i) >= 18:
-        cand_ mismo_h = f"{hh_f}:{mm_i}"
+        cand_mismo_h = f"{hh_f}:{mm_i}"
         if 1 <= min_f - _a_min(cand_mismo_h) <= 60:
             return cand_mismo_h, hf
         prev_h = f"{max(0, int(hh_f) - 1):02d}:{mm_i}"
