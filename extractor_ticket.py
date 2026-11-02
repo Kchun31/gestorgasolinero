@@ -9,16 +9,17 @@ from ticket_imagen import (
 )
 from ticket_parse import (
     LITROS_MIN, LITROS_MAX, RE_VOL, RE_BRUTO,
-    numeros, fechahoras, par_de_texto, producto_ticket, puntuar,
+    numeros, fechahoras, extraer_fechas_sueltas, extraer_horas_sueltas,
+    par_de_texto, producto_ticket, puntuar,
     localizar, moda, mejor_triple, resolver_par_horas, _linea_con,
 )
 
 FORMATO_FECHA = "%d/%m/%Y"
 TOLERANCIA_REF = 0.08
 NUCLEOS = max(1, min(4, os.cpu_count() or 2))
-SCORE_MIN = 3
+SCORE_MIN = 2
 VARIANTES_RECORTE = 2
-MIN_VOTOS = 2
+MIN_VOTOS = 1
 CLAVES = ("vi", "vf", "br", "di", "hi", "df", "hf", "tq")
 
 
@@ -61,10 +62,18 @@ def _votos_pagina(variantes):
             n = numeros(" ".join(w[0] for w in l))
             if n:
                 v["br"].append(n[-1])
-        par = par_de_texto(texto_lineas(lineas))
+        txt_pag = texto_lineas(lineas)
+        par = par_de_texto(txt_pag)
         if par:
             _voto_fecha(v, par[0], "i")
             _voto_fecha(v, par[1], "f")
+        else:
+            for f_str in extraer_fechas_sueltas(txt_pag):
+                v["di"].append(f_str)
+            horas_pag = extraer_horas_sueltas(txt_pag)
+            if len(horas_pag) >= 2:
+                v["hi"].append(horas_pag[0])
+                v["hf"].append(horas_pag[-1])
         tq = producto_ticket(lineas)
         if tq:
             v["tq"].append(tq)
@@ -78,7 +87,7 @@ def _trabajos_recorte(variantes):
         for clave, caja in localizar(var["lineas"]).items():
             es_fecha = clave in ("fi", "ff")
             lista = WL_FECHA if es_fecha else WL_NUM
-            angs = (0, 1.5, -1.5)
+            angs = (0,) if es_fecha else (0, 1.5, -1.5)
             for th in UMBRALES_RECORTE:
                 for esc in (2, 3):
                     for a in angs:
@@ -94,9 +103,17 @@ def _votos_recorte(ex, trabajos, v):
             if grupos:
                 v[clave].append(int(grupos[0]))
         else:
+            quien = "i" if clave == "fi" else "f"
             dts = fechahoras(t)
             if dts:
-                _voto_fecha(v, dts[0], "i" if clave == "fi" else "f")
+                _voto_fecha(v, dts[0], quien)
+            else:
+                fechas = extraer_fechas_sueltas(t)
+                horas = extraer_horas_sueltas(t)
+                if fechas:
+                    v["d" + quien].append(fechas[0])
+                if horas:
+                    v["h" + quien].append(horas[-1])
 
 
 def extraer_tira_ocr_local(img_bytes, litros_ref=0.0):
