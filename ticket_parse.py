@@ -7,7 +7,8 @@ LITROS_MAX = 65000
 
 RE_VOL = re.compile(r"VOL[UVN\w]*|V0L[UVN\w]*", re.I)
 RE_BRUTO = re.compile(r"BRUT\w*|AUMENT\w*\s*B\w*", re.I)
-RE_FECHA_LIN = re.compile(r"\b\d{1,4}[-/.\s]\d{1,2}[-/.\s]\d{2,4}\b")
+RE_FECHA_LIN = re.compile(r"\b\d{2}[-/]\d{2}[-/]\d{2,4}\b")
+RE_HORA_LIN = re.compile(r"\b([0-2]?\d):([0-5]\d)\b")
 
 
 def _linea_con(lineas, patron):
@@ -29,7 +30,7 @@ def numeros(txt):
     return out
 
 
-def _limpiar_texto_fecha(txt):
+def _limpiar(txt):
     t = (txt or "").upper()
     t = re.sub(r"(?<=\d)O(?=\d)", "0", t)
     t = re.sub(r"(?<=\s)O(?=\d)", "0", t)
@@ -37,88 +38,95 @@ def _limpiar_texto_fecha(txt):
     return t
 
 
-def fechahoras(txt):
-    t = _limpiar_texto_fecha(txt)
-    dts = []
-    patron = r"\b(\d{1,4})[-/.\s]+(\d{1,2})[-/.\s]+(\d{2,4})\s+([0-2]?\d)[:.\s]([0-5]\d)\b"
-    for m in re.finditer(patron, t):
-        a, b, c, hh, mm = m.groups()
-        ih, im = int(hh), int(mm)
-        if not (0 <= ih <= 23 and 0 <= im <= 59):
-            continue
-        ia, ib, ic = int(a), int(b), int(c)
-        if ia > 1900:
-            year, mes, dia = ia, ib, ic
-        else:
-            dia, mes, year = ia, ib, (ic + 2000 if ic < 100 else ic)
-        if mes > 12 and dia <= 12:
-            dia, mes = mes, dia
+def extraer_fechas_sueltas(txt):
+    t = _limpiar(txt)
+    fechas = []
+    for m in re.finditer(r"\b(\d{2})[-/.](\d{2})[-/.](\d{2,4})\b", t):
+        d, mes, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y += 2000
+        if mes > 12 and d <= 12:
+            d, mes = mes, d
         try:
-            dts.append(datetime(year, mes, dia, ih, im))
+            fechas.append(datetime(y, mes, d).strftime("%Y-%m-%d"))
         except ValueError:
             pass
+    if not fechas:
+        for m in re.finditer(r"\b(\d{2})(\d{2})(\d{2,4})\b", t):
+            d, mes, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if y < 100:
+                y += 2000
+            if 2020 <= y <= 2035 and 1 <= mes <= 12 and 1 <= d <= 31:
+                try:
+                    fechas.append(datetime(y, mes, d).strftime("%Y-%m-%d"))
+                except ValueError:
+                    pass
+    return fechas
+
+
+def extraer_horas_sueltas(txt):
+    t = _limpiar(txt)
+    horas = []
+    for m in re.finditer(r"\b([0-2]?\d):([0-5]\d)\b", t):
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            horas.append(f"{hh:02d}:{mm:02d}")
+    return horas
+
+
+def fechahoras(txt):
+    t = _limpiar(txt)
+    dts = []
+    patron = r"\b(\d{2})[-/.](\d{2})[-/.](\d{2,4})\s+([0-2]?\d)[:.]([0-5]\d)\b"
+    for m in re.finditer(patron, t):
+        d, mes, y, hh, mm = (int(x) for x in m.groups())
+        if y < 100:
+            y += 2000
+        if mes > 12 and d <= 12:
+            d, mes = mes, d
+        try:
+            dts.append(datetime(y, mes, d, hh, mm))
+        except ValueError:
+            pass
+    if not dts:
+        fechas = extraer_fechas_sueltas(t)
+        horas = extraer_horas_sueltas(t)
+        if fechas and horas:
+            y, m, d = (int(x) for x in fechas[0].split("-"))
+            for h_str in horas:
+                hh, mm = (int(x) for x in h_str.split(":"))
+                try:
+                    dts.append(datetime(y, m, d, hh, mm))
+                except ValueError:
+                    pass
     return dts
 
 
-def _elegir_par_descarga(dts):
-    if len(dts) < 2:
-        return None
-    if len(dts) == 2:
-        return dts[0], dts[1]
-    mejor = None
-    mejor_score = -1e9
-    n = len(dts)
-    for i in range(n - 1):
-        for j in range(i + 1, n):
-            dt1, dt2 = dts[i], dts[j]
-            diff_min = (dt2 - dt1).total_seconds() / 60.0
-            score = 0
-            if i == n - 2 and j == n - 1:
-                score += 60
-            elif i >= 1:
-                score += 30
-            if 5 <= diff_min <= 180:
-                score += 120
-            elif 1 <= diff_min < 5 or 180 < diff_min <= 300:
-                score += 40
-            elif diff_min <= 0:
-                score -= 250
-            else:
-                score -= 90
-            if score > mejor_score:
-                mejor_score = score
-                mejor = (dt1, dt2)
-    return mejor
-
-
 def par_de_texto(txt):
-    t = _limpiar_texto_fecha(txt)
+    t = _limpiar(txt)
     dts = fechahoras(t)
-    par = _elegir_par_descarga(dts)
-    if par:
-        return par
-    fechas = []
-    for m in re.finditer(r"\b(\d{2})[-/](\d{2})[-/](\d{2,4})\b", t):
-        d, mes, y = m.groups()
-        year = int(y) + (2000 if int(y) < 100 else 0)
+    if len(dts) >= 2:
+        if len(dts) >= 3:
+            diff_ult = (dts[-1] - dts[-2]).total_seconds() / 60.0
+            if 1 <= diff_ult <= 240:
+                return dts[-2], dts[-1]
+        return dts[0], dts[-1]
+
+    fechas = extraer_fechas_sueltas(t)
+    horas = extraer_horas_sueltas(t)
+    if fechas and len(horas) >= 2:
+        y1, m1, d1 = (int(x) for x in fechas[0].split("-"))
+        y2, m2, d2 = (int(x) for x in fechas[-1].split("-"))
+        h1, min1 = (int(x) for x in horas[0].split(":"))
+        h2, min2 = (int(x) for x in horas[-1].split(":"))
+        if len(horas) >= 3:
+            ht, mint = (int(x) for x in horas[-2].split(":"))
+            if 1 <= (h2 * 60 + min2) - (ht * 60 + mint) <= 240:
+                h1, min1 = ht, mint
         try:
-            fechas.append((year, int(mes), int(d)))
+            return datetime(y1, m1, d1, h1, min1), datetime(y2, m2, d2, h2, min2)
         except ValueError:
             pass
-    horas = []
-    for m in re.finditer(r"(?<![\d/.\-])([0-2]?\d):([0-5]\d)\b", t):
-        hh, mm = int(m.group(1)), int(m.group(2))
-        if 0 <= hh <= 23:
-            horas.append((hh, mm))
-    if fechas and len(horas) >= 2:
-        y, mes, d = fechas[-1]
-        candidatos = []
-        for hh, mm in horas:
-            try:
-                candidatos.append(datetime(y, mes, d, hh, mm))
-            except ValueError:
-                pass
-        return _elegir_par_descarga(candidatos)
     return None
 
 
@@ -172,8 +180,10 @@ def localizar(lineas):
     if brutos:
         cajas["br"] = _caja_linea(brutos[-1], solo_derecha=True)
     fechas = _linea_con(lineas, RE_FECHA_LIN)
+    if len(fechas) < 2:
+        fechas = _linea_con(lineas, RE_HORA_LIN)
     if len(fechas) >= 2:
-        cajas["fi"] = _caja_linea(fechas[-2])
+        cajas["fi"] = _caja_linea(fechas[0])
         cajas["ff"] = _caja_linea(fechas[-1])
     return cajas
 
@@ -192,66 +202,44 @@ def _a_min(h_str):
     return int(hh) * 60 + int(mm)
 
 
-def _variantes_confusion_termica(h_str):
-    hh, mm = h_str.split(":")
-    equivalentes = {
+def corregir_hora_inicio(hi, hf):
+    if not hi or not hf:
+        return hi, hf
+    min_i, min_f = _a_min(hi), _a_min(hf)
+    if min_i <= min_f and (min_f - min_i) <= 240:
+        return hi, hf
+    hh_i, mm_i = hi.split(":")
+    hh_f, _ = hf.split(":")
+    mapa_termico = {
         "19": ["08", "09"],
         "18": ["08", "06"],
         "16": ["06", "08"],
-        "10": ["00", "08"],
+        "10": ["08", "00"],
         "09": ["08"],
-        "08": ["09", "06"],
     }
-    return [f"{alt}:{mm}" for alt in equivalentes.get(hh, [])]
+    for cand_hh in mapa_termico.get(hh_i, []):
+        cand = f"{cand_hh}:{mm_i}"
+        dif = min_f - _a_min(cand)
+        if 1 <= dif <= 180:
+            return cand, hf
+    if min_i > min_f and int(hh_f) <= 11 and int(hh_i) >= 18:
+        cand_ mismo_h = f"{hh_f}:{mm_i}"
+        if 1 <= min_f - _a_min(cand_mismo_h) <= 60:
+            return cand_mismo_h, hf
+        prev_h = f"{max(0, int(hh_f) - 1):02d}:{mm_i}"
+        if 1 <= min_f - _a_min(prev_h) <= 120:
+            return prev_h, hf
+    return hi, hf
 
 
 def resolver_par_horas(hi_list, hf_list):
-    if not hi_list and not hf_list:
-        return "", ""
-    if not hi_list:
-        hf, _, _ = moda(hf_list)
-        return "", hf or ""
-    if not hf_list:
-        hi, _, _ = moda(hi_list)
-        return hi or "", ""
-
-    mi_mod, _, _ = moda([h.split(":")[1] for h in hi_list if ":" in h])
-    mf_mod, _, _ = moda([h.split(":")[1] for h in hf_list if ":" in h])
-
-    c_hi = Counter(hi_list)
-    c_hf = Counter(hf_list)
-
-    for h_raw, votos in list(c_hi.items()):
-        for alt in _variantes_confusion_termica(h_raw):
-            c_hi[alt] += max(1, votos // 2)
-    for h_raw, votos in list(c_hf.items()):
-        for alt in _variantes_confusion_termica(h_raw):
-            c_hf[alt] += max(1, votos // 2)
-
-    mejor_par = None
-    mejor_score = -1e9
-
-    for hi, n_i in c_hi.most_common(12):
-        for hf, n_f in c_hf.most_common(12):
-            diff = _a_min(hf) - _a_min(hi)
-            bono_min = (2 if hi.endswith(f":{mi_mod}") else 0) + (2 if hf.endswith(f":{mf_mod}") else 0)
-            votos_reales = hi_list.count(hi) + hf_list.count(hf)
-            score = (n_i + n_f) * 3 + votos_reales * 2 + bono_min
-
-            if 5 <= diff <= 150:
-                score += 65
-            elif 1 <= diff < 5 or 150 < diff <= 240:
-                score += 25
-            elif -1430 <= diff <= -1320:
-                score += 15
-            else:
-                score -= 120
-
-            if score > mejor_score:
-                mejor_score = score
-                mejor_par = (hi, hf)
-
-    return mejor_par if mejor_par else (moda(hi_list)[0] or "", moda(hf_list)[0] or "")
+    hi, _, _ = moda(hi_list)
+    hf, _, _ = moda(hf_list)
+    hi = hi or ""
+    hf = hf or ""
+    if hi and hf:
+        hi, hf = corregir_hora_inicio(hi, hf)
+    return hi, hf
 
 
 def mejor_triple(vi_list, vf_list, br_list):
